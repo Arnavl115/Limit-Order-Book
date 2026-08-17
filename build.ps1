@@ -23,9 +23,11 @@ if (-not (Test-Path $vc)) { throw "VsDevCmd.bat not found at $vc" }
 
 $src = @(
     "$root\src\core\price_level.cpp",
+    "$root\src\core\order_book.cpp",
     "$root\tests\test_main.cpp",
     "$root\tests\test_order.cpp",
-    "$root\tests\test_price_level.cpp"
+    "$root\tests\test_price_level.cpp",
+    "$root\tests\test_order_book.cpp"
 )
 
 $flags = @(

@@ -12,7 +12,8 @@ We are building the system in **C++20** (backend/engine) in iterative phases:
 | Phase | Scope | Status |
 |-------|-------|--------|
 | 1 | Core data structures: `Order`, `PriceLevel`, shared types | ✅ Done |
-| 2 | `OrderBook` class: add, cancel, best bid/ask | ⏭ Next |
+| 2 | `OrderBook` class: add, cancel, best bid/ask | ✅ Done (Step A baseline) |
+| 2B | OrderBook performance pass: arena pool + hash levels + benchmarks | ⏭ Next |
 | 3 | Matching Engine: crossing the spread, partial fills | pending |
 | 4 | API & WebSocket gateway | pending |
 | 5 | Python market-maker bot | pending |
@@ -55,12 +56,15 @@ project2/
 │       ├── types.hpp          # shared aliases + enums
 │       ├── order.hpp          # the Order struct
 │       ├── price_level.hpp    # PriceLevel: std::list FIFO level, O(1) ops
-│       └── price_level.cpp    # TU placeholder (all methods are inline in the header)
+│       ├── price_level.cpp    # TU placeholder (all methods are inline in the header)
+│       ├── order_book.hpp     # OrderBook: price tree + O(1) order map (Phase 2)
+│       └── order_book.cpp     # TU placeholder (all methods are inline in the header)
 └── tests/
     ├── test_framework.hpp     # minimal dependency-free test harness
     ├── test_main.cpp          # RUN() entry point
     ├── test_order.cpp         # tests for Order
-    └── test_price_level.cpp   # tests for PriceLevel
+    ├── test_price_level.cpp   # tests for PriceLevel
+    └── test_order_book.cpp    # tests for OrderBook
 ```
 
 ---
@@ -132,6 +136,47 @@ A single level of the book (one distinct price).
 `PriceLevel` is fully header-inline; this file just exists as a stable home for
 future non-inline code. It currently only `#include`s the header.
 
+### `src/core/order_book.hpp` — the `OrderBook` (Phase 2)
+
+The central book: resting bids and asks organised by price, with **O(1)
+cancellation** and O(log N) best-quote queries.
+
+- **Representation** (mandated):
+  - `bids_` / `asks_`: `std::map<Price, PriceLevel>` (red-black tree). Bids are
+    queried from `rbegin()` (descending -> highest price first); asks from
+    `begin()` (ascending -> lowest price first).
+  - `orders_`: `std::unordered_map<OrderId, PriceLevel::iterator>` — the key to
+    O(1) cancel. It maps an order id to the *exact list node* holding that
+    order, so cancellation never scans a level.
+- **Why iterators, not raw pointers**: orders live inside `std::list` nodes.
+  `std::list` iterators remain valid across insertions and erasures of *other*
+  elements, so the order map can never dangle through unrelated activity. When
+  cancelling, the order's `price`/`side` are read **off the Order node itself**,
+  so the map stores no duplicated key data that could drift.
+- **Key methods**: `addOrder` (O(log N) price lookup via `try_emplace` +
+  O(1) FIFO append; assigns the next engine `seq`), `cancelOrder` (O(1);
+  prunes the price level from the tree when it empties), `bestBid`/`bestAsk`
+  (O(1) via `rbegin()`/`begin()`), `bestBidLevel`/`bestAskLevel` (level
+  handles for the Phase 3 matching engine), `findOrder`, `totalQuantity`,
+  `levelCount`, `orderCount`.
+- **Invariants** (maintained by every mutator, documented in the header):
+  1. one `orders_` entry per resting order, each in exactly one level on the
+     correct side;
+  2. level price key == stored `Order.price`;
+  3. no empty level is ever stored (last erase prunes the key);
+  4. `PriceLevel::total_qty_` always == sum of remaining qty;
+  5. `seq` strictly increasing in arrival order (authoritative time priority).
+- **Rejection policy**: `addOrder` rejects duplicate ids (book-wide), zero
+  quantity, and non-positive prices. These are cheap defensive checks; the
+  gateway is expected to do the heavy validation in later phases.
+- All methods are inline in the header (hot path must be inlinable), matching
+  the `PriceLevel` convention.
+
+### `src/core/order_book.cpp` — placeholder TU
+
+`OrderBook` is fully header-inline; this file is the stable home for future
+non-inline code.
+
 ### `tests/test_framework.hpp` — mini test harness
 
 - Deliberately **dependency-free** (no Catch2/GoogleTest) so we can build offline.
@@ -157,6 +202,22 @@ Verifies the critical invariants:
 - Iterators returned by `insert` remain valid after further inserts.
 - `reduce()` handles partial fills (status transitions + quantity accounting).
 
+### `tests/test_order_book.cpp`
+
+Verifies the book's contracts and invariants:
+- Empty book: no best bid/ask, null level handles, zero counts.
+- Best-bid = highest resting price; best-ask = lowest resting price, including
+  after cancels (the next-best quote is revealed).
+- FIFO time priority within a level (`front()` = oldest = next to execute).
+- O(1) cancel: level totals, list shape, and `orders_` map stay consistent.
+- Last-order-at-a-price cancels prune the level from the tree.
+- Duplicate ids are rejected book-wide; unknown ids fail cancel gracefully.
+- Invalid orders (zero qty, non-positive price) are rejected.
+- `seq` is assigned strictly increasing in arrival order.
+- Bids and asks are fully isolated.
+- The engine hook: `bestBidLevel()` + `PriceLevel::reduce()` + `cancelOrder()`
+  model the Phase 3 fill path and keep every invariant intact.
+
 ---
 
 ## 5. What changed / was newly introduced (delta since the empty repo)
@@ -173,6 +234,11 @@ Verifies the critical invariants:
    invariant; Phase 3 matching will call it for partial fills.
 6. **Test infrastructure** — dependency-free harness + 7 passing tests
    (Debug and Release both build clean under `/W4`).
+7. **Phase 2 `OrderBook` (Step A baseline)** — `order_book.hpp` with the
+   mandated `std::map` + `std::list` + `std::unordered_map` structure,
+   documented invariants, rejection policy, and `bestBidLevel`/`bestAskLevel`
+   handles as the Phase 3 engine hook. Test suite now at **24 tests**, all
+   passing in Debug and Release under `/W4`.
 
 ---
 
@@ -180,15 +246,17 @@ Verifies the critical invariants:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1
-& .\build\Debug\lob_tests.exe        # expect: Passed 7/7 tests, 0 failures
+& .\build\Debug\lob_tests.exe        # expect: Passed 24/24 tests, 0 failures
 ```
 
 ---
 
 ## 7. Next steps
 
-- **Phase 2** — `OrderBook`: `std::map<Price, PriceLevel>` for asks (ascending)
-  and bids (descending), `OrderMap` (`std::unordered_map<OrderId, PriceLevel::iterator>`),
-  `AddOrder`, `CancelOrder`, `GetBestBid()`, `GetBestAsk()`, and tests.
-- **Phase 3** — Matching engine: crossing the spread, partial fills, order states.
+- **Phase 2B** — OrderBook performance pass behind the *same* public API:
+  arena-pooled intrusive order lists (no per-order heap allocation), hash-map
+  (or bounded-array) price-level lookup, O(1) best bid/ask, plus a benchmark
+  harness proving each optimisation with measured throughput/latency numbers.
+- **Phase 3** — Matching engine: crossing the spread, partial fills, order
+  states, using the `bestBidLevel`/`bestAskLevel` handles and `reduce()`.
 - Then the gateway, bots, and frontend.
