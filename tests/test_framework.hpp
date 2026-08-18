@@ -50,7 +50,9 @@ inline void check(bool cond, const char* expr, const char* file, int line) {
         for (auto& t : ::testfw::registry()) {                                 \
             ::testfw::current_test = t.name.c_str();                            \
             std::printf("[ RUN  ] %s\n", t.name.c_str());                       \
+            std::fflush(stdout);                                                \
             t.fn();                                                            \
+            std::fflush(stdout);                                                \
         }                                                                      \
         std::printf("Passed %zu/%zu tests, %d failures\n",                      \
                     ::testfw::registry().size() - (size_t)::testfw::failures,  \

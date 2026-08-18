@@ -24,10 +24,13 @@ if (-not (Test-Path $vc)) { throw "VsDevCmd.bat not found at $vc" }
 $src = @(
     "$root\src\core\price_level.cpp",
     "$root\src\core\order_book.cpp",
+    "$root\src\core\fast_order_book.cpp",
     "$root\tests\test_main.cpp",
     "$root\tests\test_order.cpp",
     "$root\tests\test_price_level.cpp",
-    "$root\tests\test_order_book.cpp"
+    "$root\tests\test_order_book.cpp",
+    "$root\tests\test_order_arena.cpp",
+    "$root\tests\test_fast_order_book.cpp"
 )
 
 $flags = @(
@@ -66,4 +69,18 @@ $cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($linkArgs -join " ")
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw "Link failed with exit code $LASTEXITCODE" }
 
+# Build the benchmark executable (single TU with its own main()).
+$benchObj = Join-Path $gen "bench_order_book.obj"
+$compileArgs = $flags + @("/c", "/Fo`"$benchObj`"", "`"$root\tests\bench_order_book.cpp`"")
+$cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($compileArgs -join " ")
+cmd /c $cmd
+if ($LASTEXITCODE -ne 0) { throw "Compile failed: tests\bench_order_book.cpp" }
+
+$benchExe = Join-Path $out "lob_bench.exe"
+$benchLinkArgs = @($benchObj, "/Fe`"$benchExe`"", "/link", "/INCREMENTAL:NO")
+$cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($benchLinkArgs -join " ")
+cmd /c $cmd
+if ($LASTEXITCODE -ne 0) { throw "Link failed with exit code $LASTEXITCODE" }
+
 Write-Host "OK: $exe"
+Write-Host "OK: $benchExe"
