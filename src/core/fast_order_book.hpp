@@ -5,11 +5,11 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <unordered_map>
 #include <vector>
 
 #include "fast_price_level.hpp"
 #include "order.hpp"
+#include "order_id_map.hpp"
 
 namespace lob {
 
@@ -19,10 +19,13 @@ namespace lob {
 //
 //   - Order storage:  arena-pooled intrusive FIFO lists (OrderArena +
 //                     FastPriceLevel). No per-order heap allocation.
+//   - Order lookup:   OrderIdMap, an open-addressing OrderId -> OrderNode*
+//                     table. No per-node allocation (unlike std::unordered_map)
+//                     and contiguous-memory cache behavior.
 //   - Price lookup:   bounded array indexed by price offset. O(1) lookup,
 //                     not O(log N) like the canonical std::map.
-//   - Best bid/ask:   cached index per side, refreshed by a downwards walk
-//                     when the best level empties. Amortized O(1); see below.
+//   - Best bid/ask:   cached index per side, refreshed by a walk when the best
+//                     level empties. Amortized O(1); see below.
 //
 // The bounded price domain is fixed at construction: [min_price, max_price].
 // Prices outside it are rejected by addOrder. This is the standard high
@@ -31,10 +34,11 @@ namespace lob {
 //
 // Best bid/ask maintenance: the cache is set on insert (if the new price
 // improves the best). When the best level is emptied by a cancel/fill, we walk
-// the array downwards to the next non-empty level. Each emptied slot is passed
-// over at most once per time it is at the frontier, so across a whole session
-// the walk cost is amortized O(1) per operation; the worst case is O(price
-// range) for a single op that empties a tall frontier.
+// the array toward the interior (down for bids, up for asks) to the next
+// non-empty level. Each emptied slot is passed over at most once per time it
+// is at the frontier, so across a whole session the walk cost is amortized
+// O(1) per operation; the worst case is O(price range) for a single op that
+// empties a tall frontier.
 //
 // Invariants (maintained by every mutator, mirroring OrderBook):
 //   1. one orders_ entry per resting order, each linked into exactly one level
@@ -48,7 +52,7 @@ namespace lob {
 // Thread-safety: not thread-safe by design, like OrderBook.
 class FastOrderBook {
 public:
-    using OrderMap = std::unordered_map<OrderId, OrderNode*>;
+    using OrderMap = OrderIdMap;
 
     // Price domain is inclusive on both ends. `initial_chunk` is the first
     // arena chunk size in nodes (see OrderArena).
@@ -97,7 +101,7 @@ public:
 
     [[nodiscard]] std::size_t orderCount() const noexcept { return orders_.size(); }
     [[nodiscard]] bool contains(OrderId id) const noexcept {
-        return orders_.find(id) != orders_.end();
+        return orders_.find(id) != nullptr;
     }
     [[nodiscard]] bool empty() const noexcept { return orders_.empty(); }
     [[nodiscard]] std::size_t levelCount(Side side) const noexcept {
@@ -154,6 +158,7 @@ private:
     FastPriceLevel* acquireLevel() {
         if (free_levels_.empty()) {
             level_pool_.push_back(std::make_unique<FastPriceLevel>());
+            free_levels_.push_back(level_pool_.back().get());
         }
         FastPriceLevel* lvl = free_levels_.back();
         free_levels_.pop_back();
@@ -166,23 +171,42 @@ private:
         free_levels_.push_back(lvl);
     }
 
-    // The array slot `idx` on `side` just became active with `lvl`.
-    void activateLevel(SideState& st, std::size_t idx, FastPriceLevel* lvl) noexcept {
+    // The array slot `idx` on `side` just became active with `lvl`. Best bid =
+    // highest price (largest idx), best ask = lowest price (smallest idx).
+    void activateLevel(SideState& st, std::size_t idx, FastPriceLevel* lvl,
+                       Side side) noexcept {
         st.levels[idx] = lvl;
         ++st.active_count;
-        if (st.best_idx < 0 || static_cast<std::int64_t>(idx) > st.best_idx) {
-            st.best_idx = static_cast<std::int64_t>(idx);
+        const std::int64_t i = static_cast<std::int64_t>(idx);
+        const bool improves = side == Side::Buy
+            ? (st.best_idx < 0 || i > st.best_idx)
+            : (st.best_idx < 0 || i < st.best_idx);
+        if (improves) {
+            st.best_idx = i;
         }
     }
 
     // The level at array slot `idx` on `side` just emptied. O(amortized 1)
-    // best refresh: walk down to the next non-empty level, or to -1.
-    void deactivateLevel(SideState& st, std::size_t idx, FastPriceLevel* lvl) noexcept {
+    // best refresh: walk toward the interior (down for bids, up for asks) to
+    // the next non-empty level, or to -1 when the side is exhausted.
+    void deactivateLevel(SideState& st, std::size_t idx, FastPriceLevel* lvl,
+                         Side side) noexcept {
         st.levels[idx] = nullptr;
         --st.active_count;
         if (static_cast<std::int64_t>(idx) == st.best_idx) {
-            while (st.best_idx >= 0 && st.levels[static_cast<std::size_t>(st.best_idx)] == nullptr) {
-                --st.best_idx;
+            if (side == Side::Buy) {
+                while (st.best_idx >= 0 &&
+                       st.levels[static_cast<std::size_t>(st.best_idx)] == nullptr) {
+                    --st.best_idx;
+                }
+            } else {
+                while (st.best_idx < static_cast<std::int64_t>(st.levels.size()) &&
+                       st.levels[static_cast<std::size_t>(st.best_idx)] == nullptr) {
+                    ++st.best_idx;
+                }
+                if (st.best_idx >= static_cast<std::int64_t>(st.levels.size())) {
+                    st.best_idx = -1;
+                }
             }
         }
         releaseLevel(lvl);
@@ -206,7 +230,7 @@ private:
 inline bool FastOrderBook::addOrder(Order order) {
     if (order.qty == 0 || order.remaining == 0 || order.price <= 0 ||
         order.price < min_price_ || order.price > max_price_ ||
-        orders_.find(order.id) != orders_.end()) {
+        orders_.find(order.id) != nullptr) {
         return false;  // rejected: nothing to rest, out of domain, or duplicate id
     }
 
@@ -221,31 +245,30 @@ inline bool FastOrderBook::addOrder(Order order) {
         lvl = acquireLevel();
         lvl->price = node->order.price;
         lvl->side = node->order.side;
-        activateLevel(st, idx, lvl);
+        activateLevel(st, idx, lvl, node->order.side);
     }
     lvl->insert(node);
 
-    orders_.emplace(node->order.id, node);
+    orders_.insert(node->order.id, node);
     return true;
 }
 
 inline bool FastOrderBook::cancelOrder(OrderId id) noexcept {
-    OrderMap::iterator found = orders_.find(id);
-    if (found == orders_.end()) {
+    OrderNode* node = orders_.find(id);
+    if (node == nullptr) {
         return false;  // unknown order id
     }
 
-    OrderNode* node = found->second;
     FastPriceLevel* lvl = node->level;  // read off the node; no second lookup
     SideState& st = sideState(lvl->side);
 
-    orders_.erase(found);  // drop the map entry first; the node stays alive
+    orders_.erase(id);      // drop the map entry first; the node stays alive
     lvl->erase(node);
     arena_.deallocate(node);
 
     if (lvl->empty()) {
         const std::size_t idx = indexOf(lvl->price, min_price_);
-        deactivateLevel(st, idx, lvl);
+        deactivateLevel(st, idx, lvl, lvl->side);
     }
     return true;
 }
@@ -293,8 +316,8 @@ inline const FastPriceLevel* FastOrderBook::bestAskLevel() const noexcept {
 }
 
 inline const Order* FastOrderBook::findOrder(OrderId id) const noexcept {
-    OrderMap::const_iterator found = orders_.find(id);
-    return found == orders_.end() ? nullptr : &found->second->order;
+    OrderNode* node = orders_.find(id);
+    return node == nullptr ? nullptr : &node->order;
 }
 
 inline Quantity FastOrderBook::totalQuantity(Side side, Price price) const noexcept {

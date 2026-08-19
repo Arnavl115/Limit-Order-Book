@@ -30,7 +30,8 @@ $src = @(
     "$root\tests\test_price_level.cpp",
     "$root\tests\test_order_book.cpp",
     "$root\tests\test_order_arena.cpp",
-    "$root\tests\test_fast_order_book.cpp"
+    "$root\tests\test_fast_order_book.cpp",
+    "$root\tests\test_order_id_map.cpp"
 )
 
 $flags = @(

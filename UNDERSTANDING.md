@@ -13,8 +13,8 @@ We are building the system in **C++20** (backend/engine) in iterative phases:
 |-------|-------|--------|
 | 1 | Core data structures: `Order`, `PriceLevel`, shared types | ✅ Done |
 | 2 | `OrderBook` class: add, cancel, best bid/ask | ✅ Done (Step A baseline) |
-| 2B | OrderBook performance pass: arena pool + hash levels + benchmarks | ⏭ Next |
-| 3 | Matching Engine: crossing the spread, partial fills | pending |
+| 2B | OrderBook performance pass: arena pool + hash levels + benchmarks | ✅ Done |
+| 3 | Matching Engine: crossing the spread, partial fills | ⏭ Next |
 | 4 | API & WebSocket gateway | pending |
 | 5 | Python market-maker bot | pending |
 | 6 | React frontend | pending |
@@ -44,6 +44,13 @@ references are kept as **iterators**, never raw pointers. `std::list` iterators
 stay valid after insertions and after erasing *other* elements, which is exactly
 the guarantee the order map relies on.
 
+**Phase 2B relationship**: these mandated structures are the canonical baseline
+(`OrderBook`) and stay untouched. `FastOrderBook` is the performance variant —
+it keeps the *same* public API and invariants but swaps the containers for
+arena-pooled intrusive lists, an open-addressing id map, and a bounded price
+array (see Section 4). The benchmark in Section 5 measures the trade-off
+between the two.
+
 ---
 
 ## 3. Repository layout
@@ -58,13 +65,22 @@ project2/
 │       ├── price_level.hpp    # PriceLevel: std::list FIFO level, O(1) ops
 │       ├── price_level.cpp    # TU placeholder (all methods are inline in the header)
 │       ├── order_book.hpp     # OrderBook: price tree + O(1) order map (Phase 2)
-│       └── order_book.cpp     # TU placeholder (all methods are inline in the header)
+│       ├── order_book.cpp     # TU placeholder (all methods are inline in the header)
+│       ├── order_arena.hpp    # Phase 2B: chunked arena pool for order nodes
+│       ├── order_id_map.hpp   # Phase 2B: open-addressing OrderId -> node map
+│       ├── fast_price_level.hpp  # Phase 2B: intrusive FIFO price level
+│       ├── fast_order_book.hpp   # Phase 2B: arena + bounded price array book
+│       └── fast_order_book.cpp   # TU placeholder (all methods are inline)
 └── tests/
     ├── test_framework.hpp     # minimal dependency-free test harness
     ├── test_main.cpp          # RUN() entry point
     ├── test_order.cpp         # tests for Order
     ├── test_price_level.cpp   # tests for PriceLevel
-    └── test_order_book.cpp    # tests for OrderBook
+    ├── test_order_book.cpp    # tests for OrderBook
+    ├── test_order_arena.cpp   # tests for the arena pool (Phase 2B)
+    ├── test_order_id_map.cpp  # tests for the open-addressing map (Phase 2B)
+    ├── test_fast_order_book.cpp  # tests for FastOrderBook (Phase 2B)
+    └── bench_order_book.cpp   # OrderBook vs FastOrderBook benchmark (own main)
 ```
 
 ---
@@ -177,6 +193,108 @@ cancellation** and O(log N) best-quote queries.
 `OrderBook` is fully header-inline; this file is the stable home for future
 non-inline code.
 
+### `src/core/order_arena.hpp` — Phase 2B order-node arena
+
+`OrderNode` + `OrderArena`, the first Phase 2B structure. Replaces the
+`std::list` per-order heap allocation with a chunked arena pool:
+
+- `OrderNode` wraps an `Order` plus `prev`/`next` pointers (intrusive list
+  links) and a back-pointer to its owning `FastPriceLevel`. Because arena
+  memory never relocates, external references can be raw `OrderNode*` instead
+  of `std::list` iterators.
+- `OrderArena` allocates nodes in contiguous chunks (geometrically growing,
+  default first chunk 65,536 nodes, capped at 1,048,576) and hands them out
+  from an intrusive free list. `allocate`/`deallocate` are O(1) and never call
+  the heap allocator once a chunk exists; a freed node's `next` pointer doubles
+  as the free-list link.
+
+### `src/core/order_id_map.hpp` — Phase 2B order-id table
+
+`OrderIdMap`: an open-addressing (linear probing) `OrderId -> OrderNode*` map
+with a splitmix64 finalizer and tombstone deletions. It replaces
+`std::unordered_map`, which defeats the "no per-order allocation" goal because
+MSVC's implementation heap-allocates one node per element. The slot buffer is
+pre-sizable (`reserve`) and grows by rehash at ~70% occupancy, so the per-op
+cost is amortized to zero after warm-up. Tombstones are compacted by rehash
+once live+deleted occupancy crosses the threshold, so heavy add/cancel churn
+cannot degrade probe chains.
+
+### `src/core/fast_price_level.hpp` — Phase 2B price level
+
+The `FastPriceLevel`: an intrusive doubly-linked list of `OrderNode*` in FIFO
+order (head = oldest = next to execute), the Phase 2B analogue of `PriceLevel`.
+`insert` is an O(1) tail append, `erase` is an O(1) unlink through the node's
+own pointers, `reduce` keeps `total_qty_` consistent for partial fills. It
+stores `price` and `side` on the level so cancellation can find the price-array
+slot without re-reading the node.
+
+### `src/core/fast_order_book.hpp` — the `FastOrderBook` (Phase 2B)
+
+The performance book. Same public API as `OrderBook`
+(add/cancel/best/find/total), but with Phase 2B internals:
+
+- **Order storage** — `OrderArena` + `FastPriceLevel`: no per-order heap
+  allocation, and intrusive links avoid `std::list`'s per-node indirection.
+- **Order lookup** — `OrderIdMap`: open addressing over a contiguous buffer
+  instead of `std::unordered_map`'s per-node heap nodes.
+- **Price lookup** — bounded array indexed by `price - min_price` (domain fixed
+  at construction): O(1) lookup instead of `std::map`'s O(log N) tree walk.
+- **Best bid/ask** — a cached index per side, set on insert when the price
+  improves the best, and refreshed by a walk toward the interior (down for
+  bids, up for asks) when the best level empties. The walk is **amortized
+  O(1)** per operation (each emptied slot is crossed at most once per time it
+  is at the frontier); the worst case is O(price range) for one op that empties
+  a tall frontier. This is the standard high-frequency-LOB trade-off: the
+  bounded price array buys O(1) lookup and cheap best maintenance at the cost
+  of a fixed price domain.
+
+The design keeps every Phase 2 invariant (id uniqueness book-wide, price key ==
+level key, no stored empty level, `total_qty_` consistency, strict seq
+ordering) and the Phase 3 engine hook (`bestBidLevel`/`bestAskLevel` +
+`reduce`). Price-level objects are pooled (created on first use of a price,
+recycled when the level empties), so they never allocate on the hot path
+either.
+
+### `src/core/fast_order_book.cpp` — placeholder TU
+
+`FastOrderBook` is fully header-inline; this file is the stable home for future
+non-inline code.
+
+### `tests/test_order_arena.cpp` — arena tests
+
+Verifies allocation/recycling (LIFO free list), geometric chunk growth without
+moving existing nodes, capacity accounting, and that deallocated nodes are
+never handed out while still in use.
+
+### `tests/test_order_id_map.cpp` — map tests
+
+Verifies insert/find, duplicate rejection, erase, growth/rehash preserving all
+entries, tombstone paths after churn, and `reserve`.
+
+### `tests/test_fast_order_book.cpp` — FastOrderBook tests
+
+The full OrderBook contract re-run against `FastOrderBook`: empty book, best
+bid/ask maintenance on both sides (including the upward ask walk), FIFO within
+a level, cancels revealing the next best, level pruning, duplicate/invalid/out-
+of-domain rejection, seq assignment, side isolation, per-price totals, the
+engine-hook reduce path, arena/level reuse after a full drain, and
+`forEachLevel` best-first iteration.
+
+### `tests/bench_order_book.cpp` — Phase 2B benchmark
+
+A standalone executable (`lob_bench.exe`) that runs the **same** workloads
+against `OrderBook` and `FastOrderBook`:
+
+- **add-only**: a pure stream of limit orders at random prices near the touch.
+- **add/cancel mix**: a steady-state population with adds and cancels
+  interleaved (exercises cancellation and best-maintenance under churn).
+- **best-quote loop**: tight `bestBid()` + `bestAsk()` reads on a populated
+  book.
+
+It measures ns/op, ops/s, and **heap allocation counts** via global
+`operator new`/`delete` overrides (safe: the bench is its own one-TU
+executable). Results are in Section 5 below.
+
 ### `tests/test_framework.hpp` — mini test harness
 
 - Deliberately **dependency-free** (no Catch2/GoogleTest) so we can build offline.
@@ -239,24 +357,67 @@ Verifies the book's contracts and invariants:
    documented invariants, rejection policy, and `bestBidLevel`/`bestAskLevel`
    handles as the Phase 3 engine hook. Test suite now at **24 tests**, all
    passing in Debug and Release under `/W4`.
+8. **Phase 2B performance pass** — the canonical `OrderBook` is kept intact as
+   the mandated-structure baseline; a new `FastOrderBook` implements the same
+   public API with the Phase 2B structures:
+   - `OrderArena` — chunked arena pool for order nodes (no per-order heap
+     allocation; O(1) allocate/free from a free list).
+   - `OrderIdMap` — open-addressing `OrderId -> node` table (replaces
+     `std::unordered_map`, which heap-allocates a node per element).
+   - `FastPriceLevel` — intrusive doubly-linked FIFO level.
+   - bounded price array — O(1) price-level lookup; cached best bid/ask with
+     amortized O(1) refresh (walk toward the interior when the best empties).
+   - `bench_order_book.cpp` — head-to-head benchmark with allocation tracking.
+
+   **Measured results** (Release, x64, MSVC 19.44, price window 49,600–50,400;
+   medians of 3 runs, ns/op):
+
+   | workload        | OrderBook    | FastOrderBook | speedup |
+   |-----------------|--------------|---------------|---------|
+   | add-only        | ~746 ns/op   | ~458 ns/op    | ~1.6x   |
+   | add/cancel mix  | ~471 ns/op   | ~244 ns/op    | ~1.9x   |
+   | best-quote loop | ~4.7 ns/op   | ~3.8 ns/op    | ~1.25x  |
+
+   **Heap allocations** (the arena's whole point):
+
+   | workload        | OrderBook   | FastOrderBook |
+   |-----------------|-------------|---------------|
+   | add-only (2M)   | 4,000,003   | **7**         |
+   | add/cancel mix  | 4,062,890   | **45**        |
+   | best-quote      | 0           | 0             |
+
+   OrderBook allocates ~2 nodes per add (one `std::list` node + one
+   `std::unordered_map` node); FastOrderBook does essentially **zero** per-op
+   allocation once chunks and the map buffer are warm. The ~1.6–1.9x latency
+   win comes from cache-friendly contiguous storage and O(1) array lookup; the
+   remaining `FastOrderBook` allocations are one-time growth events (arena
+   chunk, map buffer, level pool) amortized over the whole run.
+9. **Bug found & fixed during 2B** — `FastOrderBook::acquireLevel()` created a
+   level but forgot to push it onto the free list, and the best-bid/ask
+   refresh walked only downward (correct for bids, wrong for asks, which walk
+   up). Both were caught by the new tests and are covered by regression tests.
+10. **Test suite now at 56 tests** (24 baseline + 32 Phase 2B), all passing in
+    Debug and Release under `/W4`.
 
 ---
 
 ## 6. How to verify
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1
-& .\build\Debug\lob_tests.exe        # expect: Passed 24/24 tests, 0 failures
+powershell -ExecutionPolicy Bypass -File build.ps1          # Debug
+& .\build\Debug\lob_tests.exe        # expect: Passed 56/56 tests, 0 failures
+
+powershell -ExecutionPolicy Bypass -File build.ps1 -Config Release
+& .\build\Release\lob_tests.exe      # expect: Passed 56/56 tests, 0 failures
+& .\build\Release\lob_bench.exe      # OrderBook vs FastOrderBook benchmark
 ```
 
 ---
 
 ## 7. Next steps
 
-- **Phase 2B** — OrderBook performance pass behind the *same* public API:
-  arena-pooled intrusive order lists (no per-order heap allocation), hash-map
-  (or bounded-array) price-level lookup, O(1) best bid/ask, plus a benchmark
-  harness proving each optimisation with measured throughput/latency numbers.
 - **Phase 3** — Matching engine: crossing the spread, partial fills, order
-  states, using the `bestBidLevel`/`bestAskLevel` handles and `reduce()`.
+  states, using the `bestBidLevel`/`bestAskLevel` handles and `reduce()`. The
+  engine will be written once against a small "book backend" interface so both
+  `OrderBook` and `FastOrderBook` can drive it.
 - Then the gateway, bots, and frontend.
