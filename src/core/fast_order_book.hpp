@@ -62,6 +62,11 @@ public:
         const std::size_t span = static_cast<std::size_t>(max_price - min_price) + 1;
         bids_.levels.assign(span, nullptr);
         asks_.levels.assign(span, nullptr);
+        level_pool_.resize(span * 2);
+        free_levels_.reserve(span * 2);
+        for (std::size_t i = 0; i < span * 2; ++i) {
+            free_levels_.push_back(&level_pool_[i]);
+        }
     }
 
     // Reserve `n` slots in the order id map (avoids rehashing on the hot
@@ -157,8 +162,8 @@ private:
 
     FastPriceLevel* acquireLevel() {
         if (free_levels_.empty()) {
-            level_pool_.push_back(std::make_unique<FastPriceLevel>());
-            free_levels_.push_back(level_pool_.back().get());
+            level_pool_backup_.push_back(std::make_unique<FastPriceLevel>());
+            return level_pool_backup_.back().get();
         }
         FastPriceLevel* lvl = free_levels_.back();
         free_levels_.pop_back();
@@ -190,7 +195,7 @@ private:
     // best refresh: walk toward the interior (down for bids, up for asks) to
     // the next non-empty level, or to -1 when the side is exhausted.
     void deactivateLevel(SideState& st, std::size_t idx, FastPriceLevel* lvl,
-                         Side side) noexcept {
+                          Side side) noexcept {
         st.levels[idx] = nullptr;
         --st.active_count;
         if (static_cast<std::int64_t>(idx) == st.best_idx) {
@@ -216,7 +221,8 @@ private:
     SideState asks_;
     OrderMap orders_;
     OrderArena arena_;
-    std::vector<std::unique_ptr<FastPriceLevel>> level_pool_;
+    std::vector<FastPriceLevel> level_pool_;
+    std::vector<std::unique_ptr<FastPriceLevel>> level_pool_backup_;
     std::vector<FastPriceLevel*> free_levels_;
     SeqNo next_seq_ = 1;  // 0 is reserved as "unassigned"
     Price min_price_;
@@ -229,27 +235,31 @@ private:
 
 inline bool FastOrderBook::addOrder(Order order) {
     if (order.qty == 0 || order.remaining == 0 || order.price <= 0 ||
-        order.price < min_price_ || order.price > max_price_ ||
-        orders_.find(order.id) != nullptr) {
-        return false;  // rejected: nothing to rest, out of domain, or duplicate id
+        order.price < min_price_ || order.price > max_price_) {
+        return false;  // rejected: nothing to rest, out of domain
+    }
+
+    OrderIdMap::SlotHandle handle = orders_.findOrPrepareInsert(order.id);
+    if (handle.is_duplicate) {
+        return false;  // duplicate id
     }
 
     OrderNode* node = arena_.allocate();
     order.seq = next_seq_++;
-    node->order = std::move(order);
+    node->order = order;
 
-    const std::size_t idx = indexOf(node->order.price, min_price_);
-    SideState& st = sideState(node->order.side);
+    const std::size_t idx = indexOf(order.price, min_price_);
+    SideState& st = sideState(order.side);
     FastPriceLevel* lvl = st.levels[idx];
     if (lvl == nullptr) {
         lvl = acquireLevel();
-        lvl->price = node->order.price;
-        lvl->side = node->order.side;
-        activateLevel(st, idx, lvl, node->order.side);
+        lvl->price = order.price;
+        lvl->side = order.side;
+        activateLevel(st, idx, lvl, order.side);
     }
     lvl->insert(node);
 
-    orders_.insert(node->order.id, node);
+    orders_.commitInsert(handle, node);
     return true;
 }
 

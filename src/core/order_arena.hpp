@@ -56,11 +56,19 @@ public:
     OrderArena& operator=(const OrderArena&) = delete;
 
     OrderNode* allocate() {
-        if (free_head_ == nullptr) {
+        if (free_head_ != nullptr) {
+            OrderNode* n = free_head_;
+            free_head_ = n->next;  // next doubles as the free-list link
+            n->next = nullptr;
+            n->prev = nullptr;
+            n->level = nullptr;
+            return n;
+        }
+        if (current_index_ >= current_cap_) {
             grow();
         }
-        OrderNode* n = free_head_;
-        free_head_ = n->next;  // next doubles as the free-list link
+        OrderNode* n = &current_chunk_[current_index_++];
+        n->order.id = 0;
         n->next = nullptr;
         n->prev = nullptr;
         n->level = nullptr;
@@ -75,36 +83,32 @@ public:
     }
 
     [[nodiscard]] std::size_t chunkCount() const noexcept { return chunks_.size(); }
-    [[nodiscard]] std::size_t capacity() const noexcept {
-        std::size_t cap = 0;
-        for (const auto& c : chunks_) {
-            cap += c->nodes.size();
-        }
-        return cap;
-    }
+    [[nodiscard]] std::size_t capacity() const noexcept { return total_capacity_; }
 
 private:
     struct Chunk {
-        explicit Chunk(std::size_t n) : nodes(n) {}
-        std::vector<OrderNode> nodes;
+        std::unique_ptr<OrderNode[]> data;
+        std::size_t size = 0;
     };
 
     void grow() {
         const std::size_t cap = chunks_.empty()
             ? initial_chunk_
-            : std::min(chunks_.back()->nodes.size() * 2, kMaxChunk);
-        auto chunk = std::make_unique<Chunk>(cap);
-        OrderNode* nodes = chunk->nodes.data();
-        for (std::size_t i = 0; i + 1 < cap; ++i) {
-            nodes[i].next = &nodes[i + 1];
-        }
-        nodes[cap - 1].next = nullptr;
-        free_head_ = nodes;
-        chunks_.push_back(std::move(chunk));
+            : std::min(chunks_.back().size * 2, kMaxChunk);
+        auto data = std::make_unique_for_overwrite<OrderNode[]>(cap);
+        current_chunk_ = data.get();
+        current_index_ = 0;
+        current_cap_ = cap;
+        total_capacity_ += cap;
+        chunks_.push_back(Chunk{std::move(data), cap});
     }
 
-    std::vector<std::unique_ptr<Chunk>> chunks_;
+    std::vector<Chunk> chunks_;
     OrderNode* free_head_ = nullptr;
+    OrderNode* current_chunk_ = nullptr;
+    std::size_t current_index_ = 0;
+    std::size_t current_cap_ = 0;
+    std::size_t total_capacity_ = 0;
     std::size_t initial_chunk_;
 };
 
