@@ -30,7 +30,10 @@ enum class Side : std::uint8_t {
 };
 
 enum class OrderType : std::uint8_t {
-    Limit,  // only Limit for now; Market/IOC/FOK are future phases
+    Limit,   // resting limit, GTC by default (price must be >0)
+    Market,  // no price, sweeps until filled or book empty
+    IOC,     // Immediate-Or-Cancel: fill what crosses, cancel residual
+    FOK,     // Fill-Or-Kill: all-or-nothing, no partial trades
 };
 
 enum class OrderStatus : std::uint8_t {
@@ -40,6 +43,16 @@ enum class OrderStatus : std::uint8_t {
     Cancelled,
     Rejected,
 };
+
+constexpr const char* toString(OrderType t) noexcept {
+    switch (t) {
+        case OrderType::Limit:  return "limit";
+        case OrderType::Market: return "market";
+        case OrderType::IOC:    return "ioc";
+        case OrderType::FOK:    return "fok";
+    }
+    return "unknown";
+}
 
 constexpr const char* toString(Side s) noexcept {
     return s == Side::Buy ? "buy" : "sell";

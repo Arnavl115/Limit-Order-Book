@@ -34,7 +34,10 @@ $src = @(
     "$root\tests\test_fast_order_book.cpp",
     "$root\tests\test_order_id_map.cpp",
     "$root\tests\test_book_backend.cpp",
-    "$root\tests\test_match_types.cpp"
+    "$root\tests\test_match_types.cpp",
+    "$root\tests\test_matching_engine.cpp",
+    "$root\tests\test_parity.cpp",
+    "$root\tests\test_order_types.cpp"
 )
 
 $flags = @(
@@ -73,7 +76,7 @@ $cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($linkArgs -join " ")
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw "Link failed with exit code $LASTEXITCODE" }
 
-# Build the benchmark executable (single TU with its own main()).
+# Build the benchmark executables (single TU with own main()).
 $benchObj = Join-Path $gen "bench_order_book.obj"
 $compileArgs = $flags + @("/c", "/Fo`"$benchObj`"", "`"$root\tests\bench_order_book.cpp`"")
 $cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($compileArgs -join " ")
@@ -86,5 +89,18 @@ $cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($benchLinkArgs -join " ")
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw "Link failed with exit code $LASTEXITCODE" }
 
+$benchMatchObj = Join-Path $gen "bench_matching.obj"
+$compileArgs = $flags + @("/c", "/Fo`"$benchMatchObj`"", "`"$root\tests\bench_matching.cpp`"")
+$cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($compileArgs -join " ")
+cmd /c $cmd
+if ($LASTEXITCODE -ne 0) { throw "Compile failed: tests\bench_matching.cpp" }
+
+$benchMatchExe = Join-Path $out "lob_match_bench.exe"
+$benchMatchLinkArgs = @($benchMatchObj, "/Fe`"$benchMatchExe`"", "/link", "/INCREMENTAL:NO")
+$cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($benchMatchLinkArgs -join " ")
+cmd /c $cmd
+if ($LASTEXITCODE -ne 0) { throw "Link failed with exit code $LASTEXITCODE" }
+
 Write-Host "OK: $exe"
 Write-Host "OK: $benchExe"
+Write-Host "OK: $benchMatchExe"
