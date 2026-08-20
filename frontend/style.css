@@ -1,0 +1,100 @@
+/* Dark theme — TradingView palette, 12-col grid */
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#0B0E11;color:#D1D4DC;font:13px/1.4 Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif}
+body{display:flex;flex-direction:column}
+a{color:#2962FF}
+
+/* Top bar */
+.top-bar{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:#131722;border-bottom:1px solid #2A2E39;font-size:12px}
+.top-bar .symbol{font-weight:700;letter-spacing:.04em}
+.top-bar .divider{opacity:.4;margin:0 8px}
+.last-px{font-weight:600}
+.chg.up{color:#0ECB81}.chg.down{color:#F6465D}
+.bid{color:#0ECB81}.ask{color:#F6465D}.spread{color:#FFB800}
+.conn-dot{font-size:14px;vertical-align:middle}
+.conn-dot.online{color:#0ECB81;text-shadow:0 0 6px #0ECB81}
+.conn-dot.offline{color:#F6465D}
+.conn-dot.connecting{color:#FFB800}
+
+/* Grids */
+.main-grid{display:grid;grid-template-columns:6fr 3fr 3fr;gap:8px;padding:8px;flex:1;min-height:340px}
+.bottom-grid{display:grid;grid-template-columns:8fr 4fr;gap:8px;padding:0 8px 8px 8px}
+.panel{background:#131722;border:1px solid #2A2E39;border-radius:6px;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.panel-head{padding:8px 10px;font-weight:600;border-bottom:1px solid #2A2E39;display:flex;justify-content:space-between;align-items:center}
+.panel-head .sub{font-weight:400;opacity:.6;font-size:11px}
+
+/* Chart */
+.chart-panel{position:relative}
+#chart{width:100%;height:300px;display:block;background:#0B0E11}
+.chart-tip{position:absolute;pointer-events:none;background:#1E222D;border:1px solid #2A2E39;padding:4px 6px;border-radius:4px;font-size:11px;display:none}
+
+/* Book */
+.book-head,.trades-head,.orders-head{display:grid;padding:4px 8px;font-size:11px;opacity:.6;border-bottom:1px solid #2A2E39}
+.book-head{grid-template-columns:1fr 1fr 1fr}
+.trades-head{grid-template-columns:1fr 1fr 1fr}
+.orders-head{grid-template-columns:1.2fr 1fr 0.7fr 1fr 0.8fr 1fr 0.6fr}
+.book-side{max-height:180px;overflow:auto}
+.book-side.asks{border-bottom:1px solid #2A2E39}
+.book-side .row{position:relative;display:grid;grid-template-columns:1fr 1fr 1fr;padding:2px 8px;font-size:12px;font-variant-numeric:tabular-nums;font-family:ui-monospace, SFMono-Regular, Menlo, monospace;cursor:default}
+.book-side .row .depth{position:absolute;inset:0;opacity:.12;pointer-events:none}
+.book-side .row.buy .depth{background:#0ECB81}
+.book-side .row.sell .depth{background:#F6465D}
+.book-side .row.best{outline:1px solid #2962FF;outline-offset:-1px}
+.book-side .row.flash-buy{animation:flashBuy 400ms ease}
+.book-side .row.flash-sell{animation:flashSell 400ms ease}
+@keyframes flashBuy{from{background:rgba(14,203,129,.35)}to{background:transparent}}
+@keyframes flashSell{from{background:rgba(246,70,93,.35)}to{background:transparent}}
+.spread-row{display:flex;justify-content:center;gap:8px;padding:4px 8px;font-size:11px;background:#1E222D;color:#FFB800;border-top:1px solid #2A2E39;border-bottom:1px solid #2A2E39}
+#trades{font-variant-numeric:tabular-nums;font-family:ui-monospace, monospace}
+.trades-body{max-height:360px;overflow:auto}
+.trades-body .row{display:grid;grid-template-columns:1fr 1fr 1fr;padding:2px 8px;font-size:12px}
+.trades-body .row.buy{color:#0ECB81}.trades-body .row.sell{color:#F6465D}
+.trades-body .row.flash{animation:flash 400ms ease}
+@keyframes flash{from{background:rgba(41,98,255,.25)}to{background:transparent}}
+
+/* Orders */
+.orders-body{max-height:180px;overflow:auto}
+.orders-body .row{display:grid;grid-template-columns:1.2fr 1fr 0.7fr 1fr 0.8fr 1fr 0.6fr;padding:4px 8px;font-size:12px;align-items:center;border-bottom:1px solid #1E222D}
+.orders-body .row .side.buy{color:#0ECB81}.orders-body .row .side.sell{color:#F6465D}
+.orders-body .row .status{font-size:11px;padding:2px 4px;border-radius:3px;background:#1E222D}
+.orders-body .row .status.filled{background:rgba(14,203,129,.2);color:#0ECB81}
+.orders-body .row .status.cancelled,.orders-body .row .status.rejected{background:rgba(246,70,93,.2);color:#F6465D}
+.orders-body .row .status.resting{background:rgba(41,98,255,.2);color:#2962FF}
+.orders-body .row button{font-size:11px;padding:2px 6px;border:1px solid #2A2E39;background:#1E222D;color:#D1D4DC;border-radius:3px;cursor:pointer}
+.orders-body .row button:hover{background:#2A2E39}
+
+/* Entry */
+.entry-panel{padding:0}
+.entry-panel label{display:flex;justify-content:space-between;align-items:center;padding:6px 10px;font-size:12px}
+.entry-panel input, .entry-panel select{background:#0B0E11;border:1px solid #2A2E39;color:#D1D4DC;padding:6px 8px;border-radius:4px;width:120px;font-variant-numeric:tabular-nums}
+.entry-panel input:focus, .entry-panel select:focus{outline:1px solid #2962FF}
+.side-toggle{display:flex;gap:6px;padding:8px 10px}
+.side-btn{flex:1;padding:8px;border:1px solid #2A2E39;border-radius:4px;font-weight:600;cursor:pointer;background:#1E222D;color:#D1D4DC}
+.side-btn.buy.active{background:#0ECB81;color:#0B0E11;border-color:#0ECB81}
+.side-btn.sell.active{background:#F6465D;color:#fff;border-color:#F6465D}
+.total{padding:0 10px 6px 10px;font-size:12px;opacity:.8}
+.submit{margin:0 10px;padding:10px;border:0;border-radius:4px;font-weight:700;cursor:pointer}
+.submit.buy{background:#0ECB81;color:#0B0E11}
+.submit.sell{background:#F6465D;color:#fff}
+.cancel{margin:6px 10px;padding:6px;background:#1E222D;border:1px solid #2A2E39;color:#D1D4DC;border-radius:4px;cursor:pointer}
+.hint{padding:6px 10px;font-size:11px;opacity:.5}
+
+/* Status bar */
+.status-bar{display:flex;gap:12px;align-items:center;padding:6px 12px;background:#131722;border-top:1px solid #2A2E39;font-size:11px}
+.status-bar .divider{opacity:.3}
+
+/* Toasts */
+.toasts{position:fixed;right:12px;bottom:36px;display:flex;flex-direction:column;gap:6px;z-index:9}
+.toast{background:#1E222D;border:1px solid #2A2E39;color:#D1D4DC;padding:8px 10px;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.4);font-size:12px;animation:slideIn 200ms ease}
+.toast.error{border-color:#F6465D}
+@keyframes slideIn{from{transform:translateX(20px);opacity:0}to{transform:none;opacity:1}}
+
+/* Scrollbars */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:#2A2E39;border-radius:3px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* Right align numeric */
+.book-side .row span:nth-child(2), .book-side .row span:nth-child(3),
+.trades-body .row span:nth-child(2), .trades-body .row span:nth-child(3),
+.orders-body .row span:nth-child(4), .orders-body .row span:nth-child(5){text-align:right}

@@ -17,7 +17,7 @@ We are building the system in **C++20** (backend/engine) in iterative phases:
 | 3 | Matching Engine: crossing the spread, partial fills | ✅ Done (Steps 3A–3F) |
 | 4 | API & WebSocket gateway | ✅ Done (Steps 4A–4E) |
 | 5 | Python market-maker bot | ✅ Done (Steps 5A–5C) |
-| 6 | React frontend | pending |
+| 6 | React frontend | ✅ Done (Steps 6A–6D, vanilla JS fallback, 12-col TradingView dark) |
 
 The LOB strictly follows **price-time priority**: at any price, orders execute in
 FIFO order (oldest first). The constraints below are mandatory.
@@ -91,6 +91,10 @@ project2/
 │   ├── config.py                # Phase 5B/C: spread/inventory/max/risk constants (REFERENCE_PRICE etc.)
 │   ├── strategy.py              # Phase 5B: compute_mid/quotes, inventory skew, self-trade prevention
 │   └── market_maker.py          # Phase 5B/C: MarketMaker loop (quotes, fills, replace, safety, dry-run, heartbeat)
+├── frontend/
+│   ├── index.html               # Phase 6A: 12-col grid layout (top bar, chart, book, trades, orders, entry, status)
+│   ├── style.css                # Phase 6A/D: TradingView dark #0B0E11/#131722/#2A2E39, buy #0ECB81 sell #F6465D, tabular, heat
+│   └── app.js                   # Phase 6B-D: WS auto-reconnect, snapshot/tick, trades, chart canvas, ladder, entry, rAF
 └── tests/
     ├── test_framework.hpp       # minimal dependency-free test harness
     ├── test_main.cpp            # RUN() entry point
@@ -494,6 +498,18 @@ Stdlib-only (`socket`, `struct`, `json`, `time`, `logging`). `MMClient{host,port
 
 `MarketMaker{host,port,dry_run}` tracks `book_bids/asks`, `best_bid/ask`, `last_mid`, `own_bids/asks` (`id→price`), `bid_id/ask_id`, `inventory` (net, updated via `trade` maker/taker `side/qty`), `next_id` from 10000, `kill` flag. `_update_book_from_snapshot/tick`, `_handle_trade` (maker `bid` hit→`inventory+=qty`, `ask` hit→`inventory-=qty`, taker similarly), `_handle_execution` (remove `Filled/Cancelled/Rejected` from `own_*`, keep `resting`), `_check_safety` (`abs(inventory)>MAX_INVENTORY` → `kill`), `_flatten` (cancel all, `market` to 0, respects `dry_run` log vs `send`), `quote` (mid→quotes→`order.new` if `bid_id`/`ask_id` none else `order.replace` if price changed, checks `would_cross_self` and `MAX_ORDER_SIZE`). `run(duration_s)` → `client.connect`+`subscribe`, loop `recv_all`→`_update_*`/`_handle_*`, `time - last_msg > HEARTBEAT_TIMEOUT`→`reconnect`, `now-last_quote > REFRESH_INTERVAL`→`quote`, `sleep 0.02`, on exit cancel all. CLI `--host/--port/--dry-run/--duration/--max-inv`. Verified dry-run `bid 98/ask 102` around `REFERENCE_PRICE` when book empty, live soak vs fake market `buy`/`sell` shows `sold 3 @102 inv=-3` and skew `replace bid 98→100`.
 
+### `frontend/index.html` — Phase 6A layout
+
+12-col grid per spec: top bar (`symbol | last px ±chg% | bid/ask | spread | conn ●` `id=lastPx/lastChg/topBid/topAsk/topSpread/connDot`), main-grid (`6fr 3fr 3fr`: chart `canvas#chart` 800×300 + `chartTip`, book `div#asks`/`#bids` + `spreadRow` + `book-head`, trades `div#trades` `time|px|qty`), bottom-grid (`8fr 4fr`: orders `div#orders` `time|id|side|px|qty|status` + `posSummary` + entry `sideBuy/sideSell`, `inPrice`/`inQty`/`inType`/`inTotal`/`btnSubmit`/`btnCancelAll`), status-bar (`wsStatus`/`latMs`/`lastSeq`/`depth`/`bookStats`), toasts `div#toasts`. No external deps, vanilla JS `app.js` via `<script>`.
+
+### `frontend/style.css` — Phase 6A/D styling
+
+TradingView dark: `bg #0B0E11`, `panels #131722`, `borders #2A2E39`, `buy #0ECB81`, `sell #F6465D`. `grid-template-columns` 12-col, `tabular-nums` `ui-monospace`, condensed `row` `2px 8px` `11–13px`, depth `div.depth` `opacity .12` width `qty/maxQty*100%` behind, best `outline #2962FF`, spread `background #1E222D` `#FFB800`, flash `flashBuy/flashSell` `rgba` 400ms, trades `buy/sell` color, orders `status` `filled`/`cancelled`/`resting` pills, side toggle `active` `buy`/`sell`, status bar, toasts `slideIn`, scrollbars `6px #2A2E39`, right-aligned numerals.
+
+### `frontend/app.js` — Phase 6B-D behavior
+
+Vanilla JS IIFE, no build, `dirty`+`rAF` batching. State `book{bids,asks,best}`, `trades[]`, `candles[]` (`time/open/high/low/close/vol` per sec via `candleMap`), `orders Map`, `inventory`, `lastSeq`, `ws`, `reconnectDelay 500→5000`. `connect()` → `ws://host/ws` (same port as `gateway.exe` HTTP, `location.host`), `onopen`→`subscribe`, `onmessage`→`handleMessage` (`snapshot`→`applySnapshot` clear `Map` + `best`, `tick`→`applyTick` `Map` delete/set + `best` + flash, `trade`→`addTrade` `unshift` 200 + `lastPrice`/`lastChg` + candle `high/low/close/vol` + `inventory` via `makerId/takerId` in `orders`, `execution.report`→`updateOrder` `Map` `pending→resting/filled` + `latencyMs` via `sendTimes`, `error`→`toast`, `pong`→`latency`). `render()` (rAF) updates top bar `lastPx/chg/bid/ask/spread`, book ladder `maxQty` heat `depth` width, best highlight, asks sorted `asc` best at bottom, bids `desc` best at top, `spreadRow`, trades `time|px|qty` 80, orders `time|id|side|px|qty|status` 80 + cancel button, `posSummary` `Inv`, chart `drawChart` canvas `dpr`, `candleW` `gap` `chartScale` `chartOffset`, grid, wicks/bodies `0ECB81/F6465D`, time labels. WS auto-reconnect `onclose`→`setTimeout(connect, delay*1.5)`, snapshot resync on gap (`seq != prev+1` → `subscribe`). Latency `sendTimes` `Date.now()` on `order.new` → `execution.report` `Date.now()-sent`. Entry `updateTotal` `p*q`, `setSide` toggle, `sendOrder` `Date.now()+rand` id `side/price/qty/orderType` `sendTimes` + `orders pending`, `sendCancel`/`cancelAll` (`Esc`), click book row → fill `inPrice`, keyboard `1`/`2` side `Enter` submit `Esc` cancel (ignores when `INPUT` focused except `Enter`), chart wheel `chartScale 0.5–3`, drag `chartOffset`, `mousemove` tooltip `O/H/L/C/V`, `setInterval` ping `5s`, `scheduleRender` dirty. Exposes `window._lob` for debug.
+
 ### `tests/test_framework.hpp` — mini test harness
 
 - Deliberately **dependency-free** (no Catch2/GoogleTest) so we can build offline.
@@ -626,6 +642,10 @@ Verifies the book's contracts and invariants:
  24. **Phase 5A — Python client lib** (`bot/mm_client.py:1`): `MMClient` stdlib-only (`socket` `struct` `json` `time`) `connect(retries, backoff 1.5x)` `send(obj)` `4B BE` + `json.dumps(separators)`, `recv(timeout)`/`recv_all` `tryDecode` loop, `ping`/`subscribe`, `MAX_FRAME 1MiB`, `--test` does `ping`→`pong`/`subscribe`→`snapshot`/`order.new`→`reports` loopback check vs `gateway.exe`.
  25. **Phase 5B — Quoting engine** (`bot/config.py:1` + `strategy.py:1` + `market_maker.py:1`): `config` (`HALF_SPREAD 2`, `ORDER_QTY 5`, `INVENTORY_SKEW 0.5`, `MAX_INVENTORY 50`, `REFERENCE_PRICE 100`, `REFRESH 200ms`, `HEARTBEAT 5s`), `strategy.compute_mid` (`(bid+ask)//2` or `REFERENCE_PRICE` when empty), `compute_quotes(mid, inventory, best, own)` → `bid=mid-half+skew`/`ask=mid+half+skew` (`skew=-inventory*0.5`), `MIN_SPREAD`, clamp `>0`, `would_cross_self` (skip if `bid>=bestAsk`/`ask<=bestBid` or `>=min(own_ask)`/`<=max(own_bid)`), `MarketMaker` tracks `book_bids/asks`, `best_bid/ask`, `own_bids/asks`, `bid_id/ask_id`, `inventory` via `trade` maker/taker, `quote` via `order.new` or `order.replace` (same id, tail), `last_quote_mid`.
  26. **Phase 5C — Safety + dry-run + soak** (`bot/market_maker.py:1`): `_check_safety` (`abs(inventory)>MAX_INVENTORY` → `kill`), `_flatten` (cancel all + `market` to 0), `heartbeat` (`now-last_msg>HEARTBEAT`→`reconnect`), `--dry-run` logs `would bid/ask/replace` without `send`, `--max-inv`/`--duration` flags, `run(duration_s)` loop `recv_all`→`_update_book/tick/trade/execution` + `quote` every `REFRESH`. Verified dry-run `bid 98/ask 102` around `REFERENCE_PRICE` when empty, live vs `gateway` + fake market `buy` `qty3` → `sold 3 @102 inv=-3` + skew `replace 98→100`.
+ 27. **Phase 6A — Frontend scaffold** (`frontend/index.html:1` + `style.css:1` + `app.js:1`, gateway `src/gateway/session.cpp:1` `handleHttp` static): 12-col grid per spec (top bar `symbol|last px ±chg%|bid/ask|spread|conn ●`, main `6fr 3fr 3fr` chart `canvas#chart` 800×300 + book `asks top ↓ bids` + trades `time|px|qty`, bottom `8fr 4fr` orders `time|id|side|px|qty|status` + entry `side toggle/price/qty/total/type`, status bar `WS|latency|seq|depth`), probe Node 26.5/no react → vanilla JS no-build, `gateway.exe` serves `frontend/*` via `ifstream` (`text/html`/`javascript`/`css`, `404` else).
+ 28. **Phase 6B — Book ladder + trades tape** (`frontend/app.js:1`): `WebSocket` auto-reconnect (`ws://host/ws` `onclose→setTimeout(connect, delay*1.5)`, `subscribe` on open), `marketdata.snapshot` (`bids`/`asks` `Map` + `best` + `lastSeq`) vs `tick` (`side/price/qty/removed/isBest` → `Map` delete/set + `best` + flash `flash-buy/sell` 400ms), `trade` → `trades.unshift` 200 + `lastPrice`/`lastChg` + candle `candleMap` per sec `open/high/low/close/vol` (120 max), `book` ladder `maxQty` heat `depth` width `qty/maxQty*100%` `opacity .12` (`buy #0ECB81`/`sell #F6465D`), best `outline #2962FF`, spread middle, right-aligned tabular `ui-monospace`.
+ 29. **Phase 6C — Order entry + open orders/positions** (`frontend/app.js:1`): entry `sideBuy/sideSell` toggle `active`, `inPrice`/`inQty`/`inType` (`limit/market/ioc/fok`) `updateTotal p*q` (`market` disables price), `btnSubmit` `Place Buy/Sell` (`Date.now()+rand` id `side/price/qty/orderType` `sendTimes` + `orders pending`), `btnCancelAll` + row `✕` → `order.cancel`, click book row → fill `inPrice`, `execution.report` → `orders Map` `pending→resting/filled` + `latencyMs` (`Date.now()-sent`) + `inventory` via `trade` involving own `makerId/takerId`, `posSummary` `Inv`, `orders` table 80 + `status` pills (`filled`/`cancelled`/`resting` colors), `error` → `toast` (`slideIn` 3s).
+ 30. **Phase 6D — Polish + runbook** (`frontend/app.js:1` + `style.css:1`): dark `#0B0E11`/`#131722`/`#2A2E39`, `dirty`+`rAF` batching (`scheduleRender` `requestAnimationFrame`), chart `drawChart` `dpr` `candleW` `gap` `chartScale` `chartOffset`, wheel `0.5–3` zoom, drag `mousemove` pan, `mousemove` tooltip `O/H/L/C/V`, `setInterval` ping `5s` → `pong` latency, keyboard `1`/`2` side `Enter` submit `Esc` cancelAll (ignores when `INPUT` focused except `Enter`), `http://127.0.0.1:9000/` manual demo with `bot` counterparty verified via `curl` `GET /` 200 `WS 101` and `WS` `order.new`→`trade` (see `frontend/app.js:1` `window._lob`). Final runbook in `§6`.
 
 ---
 
@@ -646,9 +666,24 @@ python -m bot.market_maker --port 9000 --dry-run --duration 3  # logs would bid/
 python -m bot.market_maker --port 9000 --duration 5  # live quotes, watch fills/inv
 # With fake counterparty (market taker) in another terminal:
 python -c "from bot.mm_client import MMClient; c=MMClient(port=9000); c.connect(); c.send({'type':'order.new','id':9999,'side':'buy','price':0,'qty':3,'orderType':'market'}); print(c.recv_all(timeout=0.5))"
+# Frontend (no-build static, served by gateway)
+curl http://127.0.0.1:9000/                # expect 200 text/html len ~3827 (frontend/index.html:1)
+curl http://127.0.0.1:9000/app.js          # expect 200 application/javascript
+# Browser: open http://127.0.0.1:9000/ → top bar bid/ask/spread, book ladder heat, trades tape, chart canvas, order entry 1/2/Enter/Esc, status bar latency/seq, toasts on Rejected
+# WS check (raw):
+# python WS client: handshake to /ws → subscribe → marketdata.snapshot → order.new → trade (frontend/app.js:1 handles same)
 ```
 
-Both configs build clean under `/W4` (zero warnings, `/DNOMINMAX`). `lob_tests.exe` (162, includes `test_load_gateway` soak) and both benches must pass before moving on; `gateway.exe` manual run shows `Listening on 127.0.0.1:9000` and static `frontend/` if present; bot live run shows `bid`/`ask` and `sold`/`bought` with inventory skew.
+Both configs build clean under `/W4` (zero warnings, `/DNOMINMAX`). `lob_tests.exe` (162, includes `test_load_gateway` soak) and both benches must pass before moving on; `gateway.exe` manual run shows `Listening on 127.0.0.1:9000` and `frontend/` served `200`; bot live shows `bid`/`ask`; frontend shows book/tape/chart.
+
+**End-to-end runbook (Phase 6D):**
+```powershell
+powershell -ExecutionPolicy Bypass -File build.ps1 -Config Release
+.\build\Release\gateway.exe --port 9000 --book fast   # terminal 1
+python -m bot.market_maker --port 9000 --duration 0   # terminal 2 (0=infinite)
+# terminal 3: open http://127.0.0.1:9000/ in browser → place Buy/Sell limit via UI (1/2, price, qty, Enter) → see trade + book flash + chart candle, inventory in orders panel; Esc cancels
+# or headless: python -m bot.mm_client --port 9000 --test
+```
 
 ---
 
@@ -657,7 +692,8 @@ Both configs build clean under `/W4` (zero warnings, `/DNOMINMAX`). `lob_tests.e
 - **Phase 3** ✅ complete (3A–3F).
 - **Phase 4** ✅ complete (4A probe/spec + 4B json/frame + 4C server/WS/HTTP + 4D engine_host+gateway.exe + 4E load/soak). All invariants hold (engine + gateway seq monotonic, no crossed, atomic FOK, Market/IOC never rest, clean shutdown, two-client concurrency, slow-consumer policy).
 - **Phase 5** ✅ complete (5A client lib + 5B quoting engine + 5C safety/dry-run/soak). Verified dry-run `98/102`, live `sold 3 @102 inv=-3` + `replace`, soak vs fake market no deadlock, `seq` correct.
-- **Phase 6** — React frontend (no-build static `frontend/index.html`/`app.js`/`style.css` served by gateway, WS client) — pending (gateway already serves static/WS handshake).
+- **Phase 6** ✅ complete (6A scaffold + 6B book/trades + 6C entry/orders + 6D polish/runbook). All UI per layout guide (12-col dark TradingView, heat, flash, canvas OHLC, 1/2/Enter/Esc, rAF, reconnect+resync, latency/seq). Verified `curl` + `WS` + `bot` counterparty demo; final runbook in `§6`.
+- **Done** — `build.ps1 → gateway.exe --port 9000 → python -m bot.market_maker --port 9000 → http://127.0.0.1:9000/` end-to-end.
 
 ---
 

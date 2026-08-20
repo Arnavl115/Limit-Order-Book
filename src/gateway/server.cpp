@@ -65,8 +65,6 @@ bool Server::start(uint16_t port) {
 }
 
 void Server::stop() {
-    bool expected = true;
-    // Use compare_exchange to avoid double stop? But we can just proceed.
     if (!running_.exchange(false) && listenSock_ == INVALID_SOCKET) {
         // already stopped, but still need to clean sessions
     }
@@ -133,10 +131,6 @@ void Server::acceptLoop() {
             sessions_[id] = sess;
         }
         sess->start();
-        if (connectHandler_) {
-            // send snapshot asynchronously to avoid holding lock
-            connectHandler_(id);
-        }
         // Note: we keep sess in map; when its run finishes, it will remain until stop() cleans it.
         // We do not remove immediately; stop() or next accept will handle. For clean removal, Session could call removeSession on exit.
         // We'll detach removal to avoid map growth: we could have Session notify server on exit.

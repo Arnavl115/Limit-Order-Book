@@ -123,12 +123,12 @@ TEST(gateway_integration_order_new_rests_and_snapshot) {
     Server srv;
     EngineHost<OrderBook> host(book, srv);
     srv.setHandler([&](const std::string& json, int sid){ return host.handleMessage(json, sid); });
-    srv.setConnectHandler([&](int sid){ host.sendSnapshot(sid); });
     CHECK(srv.start(0));
     uint16_t port = srv.port();
     SOCKET c = clientConnect(port);
     CHECK(c != INVALID_SOCKET);
-    // On connect we should get snapshot (via connectHandler). Wait for it.
+    JsonValue sub = JsonValue::makeObject(); sub.set("type", JsonValue("subscribe")); sub.set("channel", JsonValue("book"));
+    CHECK(clientSendJson(c, sub.stringify()));
     auto snapMsgs = clientRecvAll(c, 500);
     CHECK(containsType(snapMsgs, "marketdata.snapshot"));
     // Place limit buy 100 qty10

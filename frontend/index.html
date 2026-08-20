@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LOB — High-Performance Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top-bar">
+  <div class="top-left">
+    <span class="symbol">LOB/USD</span>
+    <span class="divider">|</span>
+    <span id="lastPx" class="last-px">—</span>
+    <span id="lastChg" class="chg">—</span>
+  </div>
+  <div class="top-mid">
+    <span>Bid <span id="topBid" class="bid">—</span></span>
+    <span class="divider">/</span>
+    <span>Ask <span id="topAsk" class="ask">—</span></span>
+    <span class="divider">|</span>
+    <span>Spread <span id="topSpread" class="spread">—</span></span>
+  </div>
+  <div class="top-right">
+    <span id="connDot" class="conn-dot offline" title="WS status">●</span>
+    <span id="connText">offline</span>
+  </div>
+</header>
+
+<div class="main-grid">
+  <section class="panel chart-panel">
+    <div class="panel-head">Price <span class="sub">OHLC from trades — canvas, zoom/pan wheel+drag</span></div>
+    <canvas id="chart" width="800" height="300"></canvas>
+    <div class="chart-tip" id="chartTip"></div>
+  </section>
+
+  <section class="panel book-panel">
+    <div class="panel-head">Order Book <span class="sub">ladder — asks top ↓ bids</span></div>
+    <div class="book-head">
+      <span>Price</span><span>Qty</span><span>Total</span>
+    </div>
+    <div id="asks" class="book-side asks"></div>
+    <div class="spread-row" id="spreadRow"><span id="spreadMid">—</span> <span id="spreadVal">—</span></div>
+    <div id="bids" class="book-side bids"></div>
+  </section>
+
+  <section class="panel trades-panel">
+    <div class="panel-head">Trades <span class="sub">time | px | qty</span></div>
+    <div class="trades-head"><span>Time</span><span>Px</span><span>Qty</span></div>
+    <div id="trades" class="trades-body"></div>
+  </section>
+</div>
+
+<div class="bottom-grid">
+  <section class="panel orders-panel">
+    <div class="panel-head">Open Orders & Positions <span class="sub" id="posSummary">Inv 0 — PnL —</span></div>
+    <div class="orders-head"><span>Time</span><span>ID</span><span>Side</span><span>Px</span><span>Qty</span><span>Status</span><span></span></div>
+    <div id="orders" class="orders-body"></div>
+  </section>
+
+  <section class="panel entry-panel">
+    <div class="panel-head">Order Entry</div>
+    <div class="side-toggle">
+      <button id="sideBuy" class="side-btn buy active">Buy</button>
+      <button id="sideSell" class="side-btn sell">Sell</button>
+    </div>
+    <label>Price (ticks) <input id="inPrice" type="number" value="100" min="1" step="1"></label>
+    <label>Qty (lots) <input id="inQty" type="number" value="5" min="1" step="1"></label>
+    <label>Type
+      <select id="inType">
+        <option value="limit">Limit</option>
+        <option value="market">Market</option>
+        <option value="ioc">IOC</option>
+        <option value="fok">FOK</option>
+      </select>
+    </label>
+    <div class="total">Total: <span id="inTotal">500</span> ticks</div>
+    <button id="btnSubmit" class="submit buy">Place Buy</button>
+    <button id="btnCancelAll" class="cancel">Cancel All (Esc)</button>
+    <div class="hint">Shortcuts: 1=Buy 2=Sell Enter=Submit Esc=Cancel</div>
+  </section>
+</div>
+
+<footer class="status-bar">
+  <span id="wsStatus">WS: offline</span>
+  <span class="divider">|</span>
+  <span>Latency <span id="latMs">—</span> ms</span>
+  <span class="divider">|</span>
+  <span>Last seq <span id="lastSeq">—</span></span>
+  <span class="divider">|</span>
+  <span>Depth <span id="depth">—</span></span>
+  <span class="divider">|</span>
+  <span id="bookStats">—</span>
+</footer>
+
+<div id="toasts" class="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

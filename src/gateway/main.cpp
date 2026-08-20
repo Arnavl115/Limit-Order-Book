@@ -3,8 +3,10 @@
 #include "core/order_book.hpp"
 #include "core/fast_order_book.hpp"
 
+#include <chrono>
 #include <iostream>
 #include <string>
+#include <thread>
 
 static void printUsage() {
     std::cout << "Usage: gateway.exe [--port 9000] [--book fast|canon]\n"
@@ -24,13 +26,10 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "Gateway starting port " << port << " book " << (useFast?"fast":"canon") << "\n";
-    if (useFast) {
-        lob::FastOrderBook book(1, 100000);
-        book.reserveOrders(16384);
+    auto run = [&](auto& book){
         gateway::Server srv;
-        gateway::EngineHost<lob::FastOrderBook> host(book, srv);
+        gateway::EngineHost<std::decay_t<decltype(book)>> host(book, srv);
         srv.setHandler([&](const std::string& j,int id){ return host.handleMessage(j,id); });
-        srv.setConnectHandler([&](int id){ host.sendSnapshot(id); });
         if (!srv.start(port)) {
             std::cerr << "Failed to start server on " << port << "\n";
             return 1;
@@ -38,25 +37,22 @@ int main(int argc, char* argv[]) {
         std::cout << "Listening on 127.0.0.1:" << srv.port() << " (TCP length-prefix + WS /ws + HTTP /)\n";
         std::cout << "Press Enter to stop...\n";
         std::string line;
-        std::getline(std::cin, line);
+        if (!std::getline(std::cin, line)) {
+            // stdin closed (e.g., service) — keep running until killed
+            std::cout << "stdin closed, running until terminated\n";
+            while (true) std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
         srv.stop();
         std::cout << "Stopped\n";
+        return 0;
+    };
+    if (useFast) {
+        lob::FastOrderBook book(1, 100000);
+        book.reserveOrders(16384);
+        return run(book);
     } else {
         lob::OrderBook book;
-        gateway::Server srv;
-        gateway::EngineHost<lob::OrderBook> host(book, srv);
-        srv.setHandler([&](const std::string& j,int id){ return host.handleMessage(j,id); });
-        srv.setConnectHandler([&](int id){ host.sendSnapshot(id); });
-        if (!srv.start(port)) {
-            std::cerr << "Failed to start server on " << port << "\n";
-            return 1;
-        }
-        std::cout << "Listening on 127.0.0.1:" << srv.port() << "\n";
-        std::cout << "Press Enter to stop...\n";
-        std::string line;
-        std::getline(std::cin, line);
-        srv.stop();
-        std::cout << "Stopped\n";
+        return run(book);
     }
     return 0;
 }
