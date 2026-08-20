@@ -16,7 +16,7 @@ We are building the system in **C++20** (backend/engine) in iterative phases:
 | 2B | OrderBook performance pass: arena pool + hash levels + benchmarks | ✅ Done |
 | 3 | Matching Engine: crossing the spread, partial fills | ✅ Done (Steps 3A–3F) |
 | 4 | API & WebSocket gateway | ✅ Done (Steps 4A–4E) |
-| 5 | Python market-maker bot | pending |
+| 5 | Python market-maker bot | ✅ Done (Steps 5A–5C) |
 | 6 | React frontend | pending |
 
 The LOB strictly follows **price-time priority**: at any price, orders execute in
@@ -86,6 +86,11 @@ project2/
 │       ├── server.hpp/.cpp      # Phase 4C: Winsock accept thread + per-client workers, broadcast, clean shutdown
 │       ├── engine_host.hpp      # Phase 4D: EngineHost<Book> (IEventSink→JSON broadcast, mutex, snapshot)
 │       └── main.cpp             # Phase 4D: gateway.exe entry (port/book flag, static serve)
+├── bot/
+│   ├── mm_client.py             # Phase 5A: stdlib socket client (length-prefix, reconnect, ping)
+│   ├── config.py                # Phase 5B/C: spread/inventory/max/risk constants (REFERENCE_PRICE etc.)
+│   ├── strategy.py              # Phase 5B: compute_mid/quotes, inventory skew, self-trade prevention
+│   └── market_maker.py          # Phase 5B/C: MarketMaker loop (quotes, fills, replace, safety, dry-run, heartbeat)
 └── tests/
     ├── test_framework.hpp       # minimal dependency-free test harness
     ├── test_main.cpp            # RUN() entry point
@@ -473,6 +478,22 @@ Templated `EngineHost<Book> : IEventSink` (`Book` satisfies `BookBackend`). Hold
 
 CLI `--port` (default 9000) / `--book fast|canon` (default fast). Constructs `FastOrderBook(1,100000)`+`reserve` or `OrderBook`, `Server`, `EngineHost`, `setHandler`/`setConnectHandler(sendSnapshot)`, `start(port)`, prints, `getline(cin)` to stop. Built as `build/<Config>/gateway.exe` via `build.ps1` gatewaySrc.
 
+### `bot/mm_client.py` — Phase 5A client lib
+
+Stdlib-only (`socket`, `struct`, `json`, `time`, `logging`). `MMClient{host,port,timeout}` with `connect(retries, backoff)` (exponential), `send(obj)` → `4B BE len + json.dumps(separators)`, `recv(timeout)` → `4B BE` + payload `json.loads`, `recv_all(timeout)` coalesced, `ping`/`subscribe`, `close` (`shutdown`+`close`). `MAX_FRAME=1MiB`. Used by `market_maker.py` and `docs/protocol.md:1` tests. `--test` flag does loopback `ping`/`subscribe`/`order.new` integration check.
+
+### `bot/config.py` — Phase 5B/C constants
+
+`HALF_SPREAD=2`, `ORDER_QTY=5`, `INVENTORY_SKEW=0.5` ticks per inventory, `MIN_SPREAD=1`, `MAX_INVENTORY=50`, `MAX_ORDER_SIZE=10`, `REFERENCE_PRICE=100` (fallback mid when book empty), `REFRESH_INTERVAL_MS=200`, `HEARTBEAT_TIMEOUT_S=5.0`, `DRY_RUN=False`, `GATEWAY_HOST/PORT`.
+
+### `bot/strategy.py` — Phase 5B quoting engine
+
+`compute_mid(best_bid, best_ask, last_mid)` → `(bid+ask)//2` or fallback `REFERENCE_PRICE`. `compute_quotes(mid, inventory, best_bid/ask, own_bids/asks)` → `bid=mid-half+skew`, `ask=mid+half+skew` where `skew=-inventory*INVENTORY_SKEW` (long→lower both), enforce `MIN_SPREAD`, clamp `>0`, self-trade prevention (`bid < min(own_ask)` and `< bestAsk`, `ask > max(own_bid)` and `> bestBid`, else adjust/skip), qty capped `MAX_ORDER_SIZE`. `would_cross_self(side,price,own_bids/asks,best)` helper for `market_maker.py` to skip crossing own.
+
+### `bot/market_maker.py` — Phase 5B/C bot
+
+`MarketMaker{host,port,dry_run}` tracks `book_bids/asks`, `best_bid/ask`, `last_mid`, `own_bids/asks` (`id→price`), `bid_id/ask_id`, `inventory` (net, updated via `trade` maker/taker `side/qty`), `next_id` from 10000, `kill` flag. `_update_book_from_snapshot/tick`, `_handle_trade` (maker `bid` hit→`inventory+=qty`, `ask` hit→`inventory-=qty`, taker similarly), `_handle_execution` (remove `Filled/Cancelled/Rejected` from `own_*`, keep `resting`), `_check_safety` (`abs(inventory)>MAX_INVENTORY` → `kill`), `_flatten` (cancel all, `market` to 0, respects `dry_run` log vs `send`), `quote` (mid→quotes→`order.new` if `bid_id`/`ask_id` none else `order.replace` if price changed, checks `would_cross_self` and `MAX_ORDER_SIZE`). `run(duration_s)` → `client.connect`+`subscribe`, loop `recv_all`→`_update_*`/`_handle_*`, `time - last_msg > HEARTBEAT_TIMEOUT`→`reconnect`, `now-last_quote > REFRESH_INTERVAL`→`quote`, `sleep 0.02`, on exit cancel all. CLI `--host/--port/--dry-run/--duration/--max-inv`. Verified dry-run `bid 98/ask 102` around `REFERENCE_PRICE` when book empty, live soak vs fake market `buy`/`sell` shows `sold 3 @102 inv=-3` and skew `replace bid 98→100`.
+
 ### `tests/test_framework.hpp` — mini test harness
 
 - Deliberately **dependency-free** (no Catch2/GoogleTest) so we can build offline.
@@ -602,6 +623,9 @@ Verifies the book's contracts and invariants:
  21. **Phase 4D — Gateway ↔ Engine wiring** (`src/gateway/engine_host.hpp` + `main.cpp` → `gateway.exe`): templated `EngineHost<Book> : IEventSink` (`Book&`+`Server&`+`MatchingEngine<Book>`+`mutex`+`atomic nextBcastSeq`). `handleMessage` → `JsonValue::parse` → `type` dispatch (`order.new` → `Order`+`lock`+`engine.processOrder` → broadcast via `onTrade`/`onOrderUpdate`/`onBookTick` (`make*Json` with `nextBcastSeq_++` → `server.broadcast`); `order.cancel`/`replace` → `engine.cancel/modify`; `subscribe` → `sendSnapshot` (`bids rbegin`/`asks begin` vs `forEachLevel` best-first); `ping`→`pong`; else `error`). `onTrade`/`onOrderUpdate`/`onBookTick` serialized to JSON (`trade`/`execution.report`/`marketdata.tick`). `sendSnapshot` → `marketdata.snapshot` (`bids`/`asks` arrays). `main.cpp` `--port`/`--book` flag, `FastOrderBook(1,100000)`/`OrderBook`, `setHandler`/`setConnectHandler(sendSnapshot)`, `start`+`getline` stop. 4 new tests (159 total) `gateway_integration_*` end-to-end `order.new`→`resting`+`tick`, `sell`→`trade` at maker price, `cancel`→`Cancelled`, cross-book parity via gateway (identical traces).
  22. **Phase 4E — Load + soak** (`tests/test_load_gateway.cpp`): 3 tests `gateway_load_single_client_throughput` (2000 orders, pipeline 100, drain, check `seq` monotonic, `>1K ops/s`, no hang, `host.sendSnapshot` on connect), `gateway_load_concurrent_two_clients` (2×1000 concurrent, both `seq` monotonic), `gateway_soak_no_deadlock` (800ms continuous 1-lot 100-price, `ops>500`, still running). Measured Release `gateway_load_single_client` ~1.4K ops/s through socket (includes JSON+frame+TCP loopback, vs engine-only 3.7M ops/s) — expected, `seq` correct, no deadlock. `gateway.exe` built via `build.ps1` gatewaySrc (`gateway.exe`).
  23. **Test suite now at 162 tests** (133 + 29 Phase 4), all passing Debug and Release under `/W4` (zero warnings, `/DNOMINMAX`).
+ 24. **Phase 5A — Python client lib** (`bot/mm_client.py:1`): `MMClient` stdlib-only (`socket` `struct` `json` `time`) `connect(retries, backoff 1.5x)` `send(obj)` `4B BE` + `json.dumps(separators)`, `recv(timeout)`/`recv_all` `tryDecode` loop, `ping`/`subscribe`, `MAX_FRAME 1MiB`, `--test` does `ping`→`pong`/`subscribe`→`snapshot`/`order.new`→`reports` loopback check vs `gateway.exe`.
+ 25. **Phase 5B — Quoting engine** (`bot/config.py:1` + `strategy.py:1` + `market_maker.py:1`): `config` (`HALF_SPREAD 2`, `ORDER_QTY 5`, `INVENTORY_SKEW 0.5`, `MAX_INVENTORY 50`, `REFERENCE_PRICE 100`, `REFRESH 200ms`, `HEARTBEAT 5s`), `strategy.compute_mid` (`(bid+ask)//2` or `REFERENCE_PRICE` when empty), `compute_quotes(mid, inventory, best, own)` → `bid=mid-half+skew`/`ask=mid+half+skew` (`skew=-inventory*0.5`), `MIN_SPREAD`, clamp `>0`, `would_cross_self` (skip if `bid>=bestAsk`/`ask<=bestBid` or `>=min(own_ask)`/`<=max(own_bid)`), `MarketMaker` tracks `book_bids/asks`, `best_bid/ask`, `own_bids/asks`, `bid_id/ask_id`, `inventory` via `trade` maker/taker, `quote` via `order.new` or `order.replace` (same id, tail), `last_quote_mid`.
+ 26. **Phase 5C — Safety + dry-run + soak** (`bot/market_maker.py:1`): `_check_safety` (`abs(inventory)>MAX_INVENTORY` → `kill`), `_flatten` (cancel all + `market` to 0), `heartbeat` (`now-last_msg>HEARTBEAT`→`reconnect`), `--dry-run` logs `would bid/ask/replace` without `send`, `--max-inv`/`--duration` flags, `run(duration_s)` loop `recv_all`→`_update_book/tick/trade/execution` + `quote` every `REFRESH`. Verified dry-run `bid 98/ask 102` around `REFERENCE_PRICE` when empty, live vs `gateway` + fake market `buy` `qty3` → `sold 3 @102 inv=-3` + skew `replace 98→100`.
 
 ---
 
@@ -616,10 +640,15 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Config Release
 & .\build\Release\lob_bench.exe      # Phase 2B: OrderBook vs FastOrderBook (add-only / mix / best-quote)
 & .\build\Release\lob_match_bench.exe # Phase 3F: MatchingEngine mixed workload
 & .\build\Release\gateway.exe --port 9000 --book fast   # manual: connect via TCP length-prefix or WS /ws, then Enter to stop
-# Python bot (stdlib-only) can connect to 127.0.0.1:9000 and send {"type":"order.new",...} length-prefixed
+# Bot (stdlib-only) dry-run and live soak (needs gateway running)
+python -m bot.mm_client --port 9000 --test  # loopback ping/subscribe/order
+python -m bot.market_maker --port 9000 --dry-run --duration 3  # logs would bid/ask
+python -m bot.market_maker --port 9000 --duration 5  # live quotes, watch fills/inv
+# With fake counterparty (market taker) in another terminal:
+python -c "from bot.mm_client import MMClient; c=MMClient(port=9000); c.connect(); c.send({'type':'order.new','id':9999,'side':'buy','price':0,'qty':3,'orderType':'market'}); print(c.recv_all(timeout=0.5))"
 ```
 
-Both configs build clean under `/W4` (zero warnings, `/DNOMINMAX`). `lob_tests.exe` (162, includes `test_load_gateway` soak) and both benches must pass before moving on; `gateway.exe` manual run shows `Listening on 127.0.0.1:9000` and static `frontend/` if present.
+Both configs build clean under `/W4` (zero warnings, `/DNOMINMAX`). `lob_tests.exe` (162, includes `test_load_gateway` soak) and both benches must pass before moving on; `gateway.exe` manual run shows `Listening on 127.0.0.1:9000` and static `frontend/` if present; bot live run shows `bid`/`ask` and `sold`/`bought` with inventory skew.
 
 ---
 
@@ -627,7 +656,7 @@ Both configs build clean under `/W4` (zero warnings, `/DNOMINMAX`). `lob_tests.e
 
 - **Phase 3** ✅ complete (3A–3F).
 - **Phase 4** ✅ complete (4A probe/spec + 4B json/frame + 4C server/WS/HTTP + 4D engine_host+gateway.exe + 4E load/soak). All invariants hold (engine + gateway seq monotonic, no crossed, atomic FOK, Market/IOC never rest, clean shutdown, two-client concurrency, slow-consumer policy).
-- **Phase 5** — Python market-maker bot (stdlib `socket`/`json` client, quoting engine) — pending.
+- **Phase 5** ✅ complete (5A client lib + 5B quoting engine + 5C safety/dry-run/soak). Verified dry-run `98/102`, live `sold 3 @102 inv=-3` + `replace`, soak vs fake market no deadlock, `seq` correct.
 - **Phase 6** — React frontend (no-build static `frontend/index.html`/`app.js`/`style.css` served by gateway, WS client) — pending (gateway already serves static/WS handshake).
 
 ---
