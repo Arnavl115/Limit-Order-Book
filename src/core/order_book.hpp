@@ -94,6 +94,15 @@ public:
     [[nodiscard]] const PriceMap& bids() const noexcept { return bids_; }
     [[nodiscard]] const PriceMap& asks() const noexcept { return asks_; }
 
+    // Sequence management — the engine owns seq assignment for taker orders,
+    // but resting orders inserted via addOrder still need a seq.  When the
+    // incoming Order already carries a non-zero seq (assigned by the engine),
+    // it is preserved and next_seq_ is advanced past it; otherwise a fresh
+    // seq is minted.  This keeps seq strictly increasing across the lifetime
+    // of the book even when the engine pre-assigns.
+    [[nodiscard]] SeqNo nextSeq() const noexcept { return next_seq_; }
+    SeqNo allocateSeq() noexcept { return next_seq_++; }
+
 private:
     PriceMap& sideMap(Side side) noexcept;
     const PriceMap& sideMap(Side side) const noexcept;
@@ -113,7 +122,11 @@ inline bool OrderBook::addOrder(Order order) {
         orders_.find(order.id) != orders_.end()) {
         return false;  // rejected: nothing to rest or duplicate id
     }
-    order.seq = next_seq_++;
+    if (order.seq == 0) {
+        order.seq = next_seq_++;
+    } else if (order.seq >= next_seq_) {
+        next_seq_ = order.seq + 1;
+    }
 
     PriceMap& side = sideMap(order.side);
     // try_emplace constructs the PriceLevel in place only if the price is new;

@@ -124,6 +124,9 @@ public:
     [[nodiscard]] Price minPrice() const noexcept { return min_price_; }
     [[nodiscard]] Price maxPrice() const noexcept { return max_price_; }
 
+    [[nodiscard]] SeqNo nextSeq() const noexcept { return next_seq_; }
+    SeqNo allocateSeq() noexcept { return next_seq_++; }
+
     // Visit every active level on `side` in best-first order (bids: high to
     // low; asks: low to high). O(price range) — introspection, not hot path.
     template <typename Fn>
@@ -251,7 +254,11 @@ inline bool FastOrderBook::addOrder(Order order) {
     }
     orders_.commitInsert(handle, node);
 
-    order.seq = next_seq_++;
+    if (order.seq == 0) {
+        order.seq = next_seq_++;
+    } else if (order.seq >= next_seq_) {
+        next_seq_ = order.seq + 1;
+    }
     node->order = order;
 
     const std::size_t idx = indexOf(order.price, min_price_);

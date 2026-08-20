@@ -25,13 +25,16 @@ $src = @(
     "$root\src\core\price_level.cpp",
     "$root\src\core\order_book.cpp",
     "$root\src\core\fast_order_book.cpp",
+    "$root\src\core\matching_engine.cpp",
     "$root\tests\test_main.cpp",
     "$root\tests\test_order.cpp",
     "$root\tests\test_price_level.cpp",
     "$root\tests\test_order_book.cpp",
     "$root\tests\test_order_arena.cpp",
     "$root\tests\test_fast_order_book.cpp",
-    "$root\tests\test_order_id_map.cpp"
+    "$root\tests\test_order_id_map.cpp",
+    "$root\tests\test_book_backend.cpp",
+    "$root\tests\test_match_types.cpp"
 )
 
 $flags = @(
