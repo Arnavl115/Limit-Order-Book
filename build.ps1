@@ -26,6 +26,11 @@ $src = @(
     "$root\src\core\order_book.cpp",
     "$root\src\core\fast_order_book.cpp",
     "$root\src\core\matching_engine.cpp",
+    "$root\src\gateway\json.cpp",
+    "$root\src\gateway\frame.cpp",
+    "$root\src\gateway\ws_util.cpp",
+    "$root\src\gateway\session.cpp",
+    "$root\src\gateway\server.cpp",
     "$root\tests\test_main.cpp",
     "$root\tests\test_order.cpp",
     "$root\tests\test_price_level.cpp",
@@ -37,7 +42,12 @@ $src = @(
     "$root\tests\test_match_types.cpp",
     "$root\tests\test_matching_engine.cpp",
     "$root\tests\test_parity.cpp",
-    "$root\tests\test_order_types.cpp"
+    "$root\tests\test_order_types.cpp",
+    "$root\tests\test_json.cpp",
+    "$root\tests\test_frame.cpp",
+    "$root\tests\test_gateway.cpp",
+    "$root\tests\test_gateway_integration.cpp",
+    "$root\tests\test_load_gateway.cpp"
 )
 
 $flags = @(
@@ -48,6 +58,7 @@ $flags = @(
     "/permissive-",
     "/Zc:__cplusplus",
     "/D_CRT_SECURE_NO_WARNINGS",
+    "/DNOMINMAX",
     "/I`"$root\src`""
 )
 
@@ -104,3 +115,49 @@ if ($LASTEXITCODE -ne 0) { throw "Link failed with exit code $LASTEXITCODE" }
 Write-Host "OK: $exe"
 Write-Host "OK: $benchExe"
 Write-Host "OK: $benchMatchExe"
+
+# Build gateway executable
+$gatewaySrc = @(
+    "$root\src\core\price_level.cpp",
+    "$root\src\core\order_book.cpp",
+    "$root\src\core\fast_order_book.cpp",
+    "$root\src\core\matching_engine.cpp",
+    "$root\src\gateway\json.cpp",
+    "$root\src\gateway\frame.cpp",
+    "$root\src\gateway\ws_util.cpp",
+    "$root\src\gateway\session.cpp",
+    "$root\src\gateway\server.cpp",
+    "$root\src\gateway\main.cpp"
+)
+$gatewayObjs = @()
+foreach ($f in $gatewaySrc) {
+    $objName = [System.IO.Path]::GetFileNameWithoutExtension($f) + ".obj"
+    $obj = Join-Path $gen $objName
+    # Already compiled above for core/gateway (except main.cpp) — reuse if exists, else compile
+    if (Test-Path $obj) {
+        $gatewayObjs += $obj
+    } else {
+        $compileArgs = $flags + @("/c", "/Fo`"$obj`"", "`"$f`"")
+        $cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($compileArgs -join " ")
+        cmd /c $cmd
+        if ($LASTEXITCODE -ne 0) { throw "Compile failed: $f" }
+        $gatewayObjs += $obj
+    }
+}
+# main.cpp not in $src list, compile it now if not already
+$mainObj = Join-Path $gen "main.obj"
+if (-not (Test-Path $mainObj)) {
+    $compileArgs = $flags + @("/c", "/Fo`"$mainObj`"", "`"$root\src\gateway\main.cpp`"")
+    $cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($compileArgs -join " ")
+    cmd /c $cmd
+    if ($LASTEXITCODE -ne 0) { throw "Compile failed: src\\gateway\\main.cpp" }
+    $gatewayObjs += $mainObj
+} else {
+    if ($gatewayObjs -notcontains $mainObj) { $gatewayObjs += $mainObj }
+}
+$gatewayExe = Join-Path $out "gateway.exe"
+$gatewayLinkArgs = $gatewayObjs + @("/Fe`"$gatewayExe`"", "/link", "/INCREMENTAL:NO")
+$cmd = "`"$vc`" -arch=x64 >nul 2>&1 && cl " + ($gatewayLinkArgs -join " ")
+cmd /c $cmd
+if ($LASTEXITCODE -ne 0) { throw "Link failed with exit code $LASTEXITCODE" }
+Write-Host "OK: $gatewayExe"

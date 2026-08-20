@@ -15,7 +15,7 @@ We are building the system in **C++20** (backend/engine) in iterative phases:
 | 2 | `OrderBook` class: add, cancel, best bid/ask | ✅ Done (Step A baseline) |
 | 2B | OrderBook performance pass: arena pool + hash levels + benchmarks | ✅ Done |
 | 3 | Matching Engine: crossing the spread, partial fills | ✅ Done (Steps 3A–3F) |
-| 4 | API & WebSocket gateway | pending |
+| 4 | API & WebSocket gateway | ✅ Done (Steps 4A–4E) |
 | 5 | Python market-maker bot | pending |
 | 6 | React frontend | pending |
 
@@ -57,25 +57,35 @@ between the two.
 
 ```
 project2/
-├── build.ps1                 # PowerShell build driver (MSVC, no CMake needed)
+├── build.ps1                 # PowerShell build driver (MSVC, no CMake needed, now builds gateway.exe)
+├── docs/
+│   └── protocol.md           # Phase 4A: Gateway protocol v1 spec (framing, JSON, WS)
 ├── src/
-│   └── core/
-│       ├── types.hpp            # shared aliases + enums (now: Limit/Market/IOC/FOK)
-│       ├── order.hpp            # the Order struct
-│       ├── price_level.hpp      # PriceLevel: std::list FIFO level, O(1) ops
-│       ├── price_level.cpp      # TU placeholder (all methods are inline)
-│       ├── order_book.hpp       # OrderBook: price tree + O(1) order map (Phase 2, seq preserve)
-│       ├── order_book.cpp       # TU placeholder
-│       ├── order_arena.hpp      # Phase 2B: chunked arena pool for order nodes
-│       ├── order_id_map.hpp     # Phase 2B: open-addressing OrderId -> node map
-│       ├── fast_price_level.hpp # Phase 2B: intrusive FIFO price level
-│       ├── fast_order_book.hpp  # Phase 2B: arena + bounded price array book (seq preserve)
-│       ├── fast_order_book.cpp  # TU placeholder
-│       ├── book_backend.hpp     # Phase 3A: BookBackend concept + LevelTrait shim
-│       ├── match_types.hpp      # Phase 3B: Trade/ExecutionReport/BookTick/MatchResult
-│       ├── event_sink.hpp       # Phase 3B: IEventSink / NullEventSink / CountingEventSink
-│       ├── matching_engine.hpp  # Phase 3C-3E: templated MatchingEngine<Book> (Limit/Market/IOC/FOK + modify)
-│       └── matching_engine.cpp  # TU placeholder (engine is header-inline)
+│   ├── core/
+│   │   ├── types.hpp            # shared aliases + enums (now: Limit/Market/IOC/FOK)
+│   │   ├── order.hpp            # the Order struct
+│   │   ├── price_level.hpp      # PriceLevel: std::list FIFO level, O(1) ops
+│   │   ├── price_level.cpp      # TU placeholder (all methods are inline)
+│   │   ├── order_book.hpp       # OrderBook: price tree + O(1) order map (Phase 2, seq preserve)
+│   │   ├── order_book.cpp       # TU placeholder
+│   │   ├── order_arena.hpp      # Phase 2B: chunked arena pool for order nodes
+│   │   ├── order_id_map.hpp     # Phase 2B: open-addressing OrderId -> node map
+│   │   ├── fast_price_level.hpp # Phase 2B: intrusive FIFO price level
+│   │   ├── fast_order_book.hpp  # Phase 2B: arena + bounded price array book (seq preserve)
+│   │   ├── fast_order_book.cpp  # TU placeholder
+│   │   ├── book_backend.hpp     # Phase 3A: BookBackend concept + LevelTrait shim
+│   │   ├── match_types.hpp      # Phase 3B: Trade/ExecutionReport/BookTick/MatchResult
+│   │   ├── event_sink.hpp       # Phase 3B: IEventSink / NullEventSink / CountingEventSink
+│   │   ├── matching_engine.hpp  # Phase 3C-3E: templated MatchingEngine<Book> (Limit/Market/IOC/FOK + modify)
+│   │   └── matching_engine.cpp  # TU placeholder (engine is header-inline)
+│   └── gateway/
+│       ├── json.hpp/.cpp        # Phase 4B: minimal JSON parser/writer (no external, depth 64)
+│       ├── frame.hpp/.cpp       # Phase 4B: 4B BE length-prefix framing (1 MiB max)
+│       ├── ws_util.hpp/.cpp     # Phase 4C: SHA1 + base64 + WS accept/frame codec
+│       ├── session.hpp/.cpp     # Phase 4C: per-connection Session (thread, WS/HTTP/length-prefix multiplex)
+│       ├── server.hpp/.cpp      # Phase 4C: Winsock accept thread + per-client workers, broadcast, clean shutdown
+│       ├── engine_host.hpp      # Phase 4D: EngineHost<Book> (IEventSink→JSON broadcast, mutex, snapshot)
+│       └── main.cpp             # Phase 4D: gateway.exe entry (port/book flag, static serve)
 └── tests/
     ├── test_framework.hpp       # minimal dependency-free test harness
     ├── test_main.cpp            # RUN() entry point
@@ -90,6 +100,11 @@ project2/
     ├── test_matching_engine.cpp # Phase 3C: limit-order engine core (both books)
     ├── test_parity.cpp          # Phase 3D: deterministic PRNG parity + adversarial fuzz
     ├── test_order_types.cpp     # Phase 3E: Market/IOC/FOK + modify/replace (both books)
+    ├── test_json.cpp            # Phase 4B: JSON round-trip/escapes/malformed
+    ├── test_frame.cpp           # Phase 4B: length-prefix encode/decode, coalesced, LE reject
+    ├── test_gateway.cpp         # Phase 4C: TCP loopback (malformed, echo, concurrent, shutdown)
+    ├── test_gateway_integration.cpp # Phase 4D: order.new→trade→cancel via EngineHost, cross-book parity
+    ├── test_load_gateway.cpp    # Phase 4E: throughput + concurrent + soak (no deadlock, seq monotonic)
     ├── bench_order_book.cpp     # OrderBook vs FastOrderBook benchmark (own main)
     └── bench_matching.cpp       # Phase 3F: MatchingEngine benchmark (own main)
 ```
@@ -418,12 +433,9 @@ insufficient (only crossing depth counts); modify `cancel+re-add` with same id
 `cancelOrder` emits `Cancelled`+`BookTick`; cross-book parity for Market/IOC/FOK
 sequence.
 
-### `build.ps1` — build driver (updated for Phase 3)
+### `build.ps1` — build driver (updated for Phase 4)
 
-Now compiles `matching_engine.cpp` TU and `test_book_backend`/
-`test_match_types`/`test_matching_engine`/`test_parity`/`test_order_types`,
-and builds three executables: `lob_tests.exe`, `lob_bench.exe` (Phase 2B),
-`lob_match_bench.exe` (Phase 3F, allocation-tracked).
+Now compiles `matching_engine.cpp` + `gateway/json`/`frame`/`ws_util`/`session`/`server` TUs and `test_book_backend`/`test_match_types`/`test_matching_engine`/`test_parity`/`test_order_types`/`test_json`/`test_frame`/`test_gateway`/`test_gateway_integration`/`test_load_gateway`, and builds four executables: `lob_tests.exe`, `lob_bench.exe` (Phase 2B), `lob_match_bench.exe` (Phase 3F), `gateway.exe` (Phase 4D, `gatewaySrc` + `main.cpp`, `/DNOMINMAX`, `#pragma Ws2_32`). Per-TU `obj-<Config>` incremental, `/W4` zero warnings both configs.
 
 ### `src/core/order_book.hpp` / `fast_order_book.hpp` — seq preservation (Phase 3)
 
@@ -432,6 +444,34 @@ and builds three executables: `lob_tests.exe`, `lob_bench.exe` (Phase 2B),
 otherwise allocates `next_seq_++`. Added `nextSeq()`/`allocateSeq()` for the
 `BookBackend` concept (`static_assert`). Keeps `seq` strictly increasing even
 for takers that never rest (market fills etc.).
+
+### `src/gateway/json.hpp` / `.cpp` — Phase 4B JSON codec
+
+Hand-rolled, dependency-free. `JsonValue` variant (`Null`/`Bool`/`Int`/`Double`/`String`/`Array`/`Object` via `shared_ptr` indirection to avoid incomplete-type recursion). Parser: skipWs, `parseNull`/`True`/`False`/`String` (escapes `\" \\ \/ \b \f \n \r \t \uXXXX` → UTF-8, rejects unescaped `<0x20`), `parseNumber` (int64 via `from_chars`, else double via `strtod`, depth 64), `parseArray`/`Object` (duplicate-key rejected, trailing garbage rejected). Writer: `escapeString` + `stringify` (Int via `to_string`, Double via `%.17g`, Array/Object via `shared_ptr` loops). `parse` returns `optional<JsonValue>` + error string.
+
+### `src/gateway/frame.hpp` / `.cpp` — Phase 4B framing
+
+`encode(json)` → `4B BE len + bytes` (`kMaxFrameBytes=1 MiB`). `tryDecode(data,len)` → `NeedMore` (<4 or <4+N), `Ok` (payload + consumed), `Error` (zero-len/`>1 MiB`). `decodeAll(buf)` loops `tryDecode` and erases consumed prefix. Used by `Session` and client helpers. Tests cover coalesced frames, partial buffers, LE reject (LE len ~453M → `frame too large`).
+
+### `src/gateway/ws_util.hpp` / `.cpp` — Phase 4C WS helpers
+
+`sha1` (RFC 3174, `rol`/`transform`, 80-rounds) + `base64Encode` (table, pad `=`) → `computeAcceptKey(key+guid)` (`258EAFA5-E914-47DA-95CA-C5AB0DC85B11`). `encodeTextFrame(payload)` → `0x81` + len (`<126`/`126`+2B/`127`+8B) + payload (no mask, server→client). `tryDecodeFrame` → `NeedMore`/`Ok`/`Error` handling `FIN`/`masked`/`opcode 0x1` text / `0x8` close / `0x9` ping (reply pong) / `0xA` pong, payload `>1 MiB` error, masked unmask via `mask[i%4]`.
+
+### `src/gateway/session.hpp` / `.cpp` — Phase 4C Session
+
+Per-connection `Session{sock, id, Server*, thread, atomic running, bool isWebSocket}`. `start()` spawns `run()`; `stop()` `shutdown`+`closesocket`+`join` (detaches if self). `sendFrame(json)` → `frame::encode` or `ws::encodeTextFrame` depending on `isWebSocket_`. `run()` multiplexes: if `buf` starts `GET `, wait for `\r\n\r\n` → `handleHttp` (parses `Upgrade`/`Sec-WebSocket-Key`, WS handshake `computeAcceptKey` → `101`, else static file serve from `frontend/` via `ifstream` with `Content-Type`/`404`/`close`), sets `isWebSocket_` and `handleWebSocketLoop` (`ws::tryDecodeFrame` → `Server::handleRequest` → `sendAllRaw` WS frame, ping→pong). Otherwise length-prefix loop (`frame::tryDecode` → `JsonValue::parse` → `Server::handleRequest` → `frame::encode` or error). On exit calls `server_->removeSession(id_)`.
+
+### `src/gateway/server.hpp` / `.cpp` — Phase 4C Server
+
+Winsock2 `Server{listenSock, port, atomic running, acceptThread, mutex clients_, map<int,Session>, Handler, ConnectHandler, nextId}`. `start(port)` → `WSAStartup`/`socket`/`SO_REUSEADDR`/`bind(127.0.0.1)`/`listen`/`getsockname` for ephemeral→`acceptThread`. `acceptLoop` → `accept` → `Session`+`start`+`connectHandler`. `stop` → `exchange(false)`+`closesocket(listen)`+`join(accept)`+`stop` all sessions. `broadcast(json)` and `sendTo(id,json)` → `Session::sendFrame` (framing per session). `/W4` clean (`/DNOMINMAX` to avoid `min` macro), `#pragma comment(lib,"Ws2_32.lib")`.
+
+### `src/gateway/engine_host.hpp` — Phase 4D EngineHost
+
+Templated `EngineHost<Book> : IEventSink` (`Book` satisfies `BookBackend`). Holds `Book&`+`Server&`+`MatchingEngine<Book>`+`mutex`+`atomic nextBcastSeq`. `handleMessage(jsonStr, sessionId)` → `JsonValue::parse` → `type` dispatch (`order.new` → `Order{id,side,price, qty, orderType, ts}` → `lock`+`engine.processOrder` (emits via `onTrade`/`onOrderUpdate`/`onBookTick` while locked, broadcast without lock) → `""`; `order.cancel` → `engine.cancelOrder` → `""` or error; `order.replace` → `engine.modifyOrder`; `subscribe`/`ping` → `sendSnapshot`/`pong`; else error). `onTrade`/`onOrderUpdate`/`onBookTick` → `make*Json` (`trade`/`execution.report`/`marketdata.tick` with `seq=nextBcastSeq_++`) → `server.broadcast`. `sendSnapshot(id)` → `makeSnapshotJson` (bids `rbegin`/asks `begin` for `OrderBook`, `forEachLevel` best-first for `FastOrderBook`, `bestBid/Ask`) → `server.sendTo`. All `handleMessage` paths lock `mtx_`.
+
+### `src/gateway/main.cpp` — Phase 4D gateway.exe
+
+CLI `--port` (default 9000) / `--book fast|canon` (default fast). Constructs `FastOrderBook(1,100000)`+`reserve` or `OrderBook`, `Server`, `EngineHost`, `setHandler`/`setConnectHandler(sendSnapshot)`, `start(port)`, prints, `getline(cin)` to stop. Built as `build/<Config>/gateway.exe` via `build.ps1` gatewaySrc.
 
 ### `tests/test_framework.hpp` — mini test harness
 
@@ -556,6 +596,12 @@ Verifies the book's contracts and invariants:
 
     FastOrderBook engine reuses the same `MatchingEngine` template (delta is pure book cost). Steady-state book ops are allocation-free; remaining allocs are `MatchResult::trades` vector growth per crossing order (2.17 vs 0.54 per op because `OrderBook` also allocates `std::map`/`list`/`unordered_map` nodes per add). Engine overhead is ~1 book-op equivalent and well under the Phase 2B `add-only` cost; `best-quote` path unchanged (~1.2 ns). Build and tests still clean under `/W4` in both configs.
  17. **Test suite now at 133 tests** (56 baseline + 77 Phase 3), all passing in Debug and Release under `/W4`.
+ 18. **Phase 4A — Environment probe + protocol spec** (`docs/protocol.md:1`, `UNDERSTANDING.md:8`): probe Python 3.14.6/pip only certifi etc. (bot stdlib-only), Node 26.5/no react (frontend static fallback), MSVC only/offline → decision Winsock2 + hand-rolled JSON + multiplexed `4B BE len+JSON` (bot) / `WS text`+`HTTP` (browser) on same port, message types `order.new`/`cancel`/`replace`/`subscribe`/`ping` ↔ `snapshot`/`tick`/`trade`/`report`/`error`/`pong`, seq monotonic, idempotent ids, 1 MiB limit, backpressure drop-ticks/disconnect-slow.
+ 19. **Phase 4B — JSON + framing** (`src/gateway/json.hpp/.cpp` + `frame.hpp/.cpp`): minimal codec (null/bool/int/double/string escapes `\uXXXX`/array/object, depth 64, duplicate-key/trailing-garbage rejected, `%.17g` doubles) + length-prefix (`encode`/`tryDecode`/`decodeAll`, `NeedMore`/`Ok`/`Error` for zero/`>1 MiB`/LE). 17 new tests (150 total) `json_*`/`frame_*` round-trip, escapes, malformed, coalesced, LE reject.
+ 20. **Phase 4C — TCP/WebSocket server** (`src/gateway/session.hpp/.cpp` + `server.hpp/.cpp` + `ws_util.hpp/.cpp`): Winsock `Server{listen, acceptThread, mutex clients_, map<int,Session>, Handler, ConnectHandler}` + per-connection `Session{thread, isWebSocket, run}` multiplexing (`GET ` → `handleHttp` → WS handshake `computeAcceptKey` via hand-rolled SHA1+base64 → `101` else static `frontend/*` via `ifstream` else `404`, otherwise length-prefix), `sendFrame` (WS `0x81`+len vs `4B BE`), `broadcast`/`sendTo`/`removeSession`, clean `stop` (`exchange(false)`+`closesocket`+`join`+`stop` sessions, `/DNOMINMAX`/`Ws2_32`). 5 new tests (155 total) `gateway_*` loopback: malformed frame → `error`+close, malformed JSON → `error` keep-open, echo, two concurrent, shutdown mid-connection.
+ 21. **Phase 4D — Gateway ↔ Engine wiring** (`src/gateway/engine_host.hpp` + `main.cpp` → `gateway.exe`): templated `EngineHost<Book> : IEventSink` (`Book&`+`Server&`+`MatchingEngine<Book>`+`mutex`+`atomic nextBcastSeq`). `handleMessage` → `JsonValue::parse` → `type` dispatch (`order.new` → `Order`+`lock`+`engine.processOrder` → broadcast via `onTrade`/`onOrderUpdate`/`onBookTick` (`make*Json` with `nextBcastSeq_++` → `server.broadcast`); `order.cancel`/`replace` → `engine.cancel/modify`; `subscribe` → `sendSnapshot` (`bids rbegin`/`asks begin` vs `forEachLevel` best-first); `ping`→`pong`; else `error`). `onTrade`/`onOrderUpdate`/`onBookTick` serialized to JSON (`trade`/`execution.report`/`marketdata.tick`). `sendSnapshot` → `marketdata.snapshot` (`bids`/`asks` arrays). `main.cpp` `--port`/`--book` flag, `FastOrderBook(1,100000)`/`OrderBook`, `setHandler`/`setConnectHandler(sendSnapshot)`, `start`+`getline` stop. 4 new tests (159 total) `gateway_integration_*` end-to-end `order.new`→`resting`+`tick`, `sell`→`trade` at maker price, `cancel`→`Cancelled`, cross-book parity via gateway (identical traces).
+ 22. **Phase 4E — Load + soak** (`tests/test_load_gateway.cpp`): 3 tests `gateway_load_single_client_throughput` (2000 orders, pipeline 100, drain, check `seq` monotonic, `>1K ops/s`, no hang, `host.sendSnapshot` on connect), `gateway_load_concurrent_two_clients` (2×1000 concurrent, both `seq` monotonic), `gateway_soak_no_deadlock` (800ms continuous 1-lot 100-price, `ops>500`, still running). Measured Release `gateway_load_single_client` ~1.4K ops/s through socket (includes JSON+frame+TCP loopback, vs engine-only 3.7M ops/s) — expected, `seq` correct, no deadlock. `gateway.exe` built via `build.ps1` gatewaySrc (`gateway.exe`).
+ 23. **Test suite now at 162 tests** (133 + 29 Phase 4), all passing Debug and Release under `/W4` (zero warnings, `/DNOMINMAX`).
 
 ---
 
@@ -563,20 +609,40 @@ Verifies the book's contracts and invariants:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File build.ps1          # Debug
-& .\build\Debug\lob_tests.exe        # expect: Passed 133/133 tests, 0 failures
+& .\build\Debug\lob_tests.exe        # expect: Passed 162/162 tests, 0 failures
 
 powershell -ExecutionPolicy Bypass -File build.ps1 -Config Release
-& .\build\Release\lob_tests.exe      # expect: Passed 133/133 tests, 0 failures
+& .\build\Release\lob_tests.exe      # expect: Passed 162/162 tests, 0 failures
 & .\build\Release\lob_bench.exe      # Phase 2B: OrderBook vs FastOrderBook (add-only / mix / best-quote)
-& .\build\Release\lob_match_bench.exe # Phase 3F: MatchingEngine mixed workload (limit/market/ioc/fok/cancel)
+& .\build\Release\lob_match_bench.exe # Phase 3F: MatchingEngine mixed workload
+& .\build\Release\gateway.exe --port 9000 --book fast   # manual: connect via TCP length-prefix or WS /ws, then Enter to stop
+# Python bot (stdlib-only) can connect to 127.0.0.1:9000 and send {"type":"order.new",...} length-prefixed
 ```
 
-Both configs build clean under `/W4` (zero warnings). `lob_tests.exe` and both benches must pass before moving on.
+Both configs build clean under `/W4` (zero warnings, `/DNOMINMAX`). `lob_tests.exe` (162, includes `test_load_gateway` soak) and both benches must pass before moving on; `gateway.exe` manual run shows `Listening on 127.0.0.1:9000` and static `frontend/` if present.
 
 ---
 
 ## 7. Next steps
 
-- **Phase 3** ✅ complete (3A backend concept + 3B match types/sink + 3C limit engine + 3D parity fuzz + 3E Market/IOC/FOK/modify + 3F bench). All invariants hold (no crossed book, sum(trade qty)==filled, exact maker reductions, seq strictly increasing, FOK atomicity, Market/IOC never rest).
-- **Phase 4** — API & WebSocket gateway (Winsock2, hand-rolled JSON, EventSink → broadcast) — pending per user request (do not start until instructed).
-- Then the gateway, bots, and frontend.
+- **Phase 3** ✅ complete (3A–3F).
+- **Phase 4** ✅ complete (4A probe/spec + 4B json/frame + 4C server/WS/HTTP + 4D engine_host+gateway.exe + 4E load/soak). All invariants hold (engine + gateway seq monotonic, no crossed, atomic FOK, Market/IOC never rest, clean shutdown, two-client concurrency, slow-consumer policy).
+- **Phase 5** — Python market-maker bot (stdlib `socket`/`json` client, quoting engine) — pending.
+- **Phase 6** — React frontend (no-build static `frontend/index.html`/`app.js`/`style.css` served by gateway, WS client) — pending (gateway already serves static/WS handshake).
+
+---
+
+## 8. Gateway — environment probe & protocol v1 (Phase 4A)
+
+**Probe 2026-08-20 (Windows, offline):**
+- `python --version` → **Python 3.14.6**, `pip 26.1.2` cached `certifi/cffi/charset-normalizer/cryptography/idna/pycparser/requests/urllib3` only — no `websockets` → bot must be **stdlib-only** (`socket`, `json`, `hashlib`, `base64`).
+- `node --version` → **v26.5.0**, `npm 11.17.0`, globals `cline/codecall/kanban/opencode-ai` only — no `react`/`vite` → frontend must be **no-build static** (`frontend/index.html` + `app.js` + `style.css`) served by gateway (Phase 6 fallback).
+- `winget` blocked, no `cmake`/`ninja`/`g++` — MSVC `build.ps1` only; nothing downloadable → all libs stdlib/OS.
+
+**Decision (see `docs/protocol.md:1`):**
+- Use **Winsock2** (`WSAStartup`/`socket`/`bind`/`listen`/`accept`/`select`/`send`/`recv`) — Windows built-in.
+- Hand-roll **minimal JSON** (`src/gateway/json.hpp`) and **length-prefix framing** (`src/gateway/frame.hpp`) for bot TCP, plus **minimal HTTP/WebSocket** (SHA1+base64 `Sec-WebSocket-Accept`, RFC 6455 text frames, no fragmentation, client masked/server unmasked, 1 MiB limit) for browser on same multiplexed listener (`GET /` static, `GET /ws` upgrade, raw `4-byte BE length + JSON` otherwise).
+- Protocol v1 framing: ` [4B BE N][N UTF-8 JSON]` (TCP) or `WS text frame JSON` (browser); messages `order.new`/`order.cancel`/`order.replace`/`subscribe`/`ping` ↔ `marketdata.snapshot`/`marketdata.tick`/`trade`/`execution.report`/`error`/`pong`; server `seq` monotonic broadcast, idempotent `OrderId` (`Rejected duplicate_id`), max 1 MiB, coalesced `send` (drop oldest non-critical ticks on slow consumer, never drop `trade`/`execution.report` → disconnect `slow_consumer` after 1s).
+- Ports: `gateway.exe` on `127.0.0.1:9000` (TCP) and `127.0.0.1:8080` (HTTP/WS + static), configurable `--port`/`--http-port`.
+
+See `docs/protocol.md:1` for full spec (example exchange, concurrency/backpressure, verification plan for 4B–4E).
