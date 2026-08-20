@@ -239,12 +239,18 @@ inline bool FastOrderBook::addOrder(Order order) {
         return false;  // rejected: nothing to rest, out of domain
     }
 
+    // Allocate the node first so the map's duplicate check and value store
+    // are back-to-back (single cache-line touch for dense ids) before the
+    // arena write and level link. A rejected (duplicate) id pays only a
+    // free-list push.
+    OrderNode* node = arena_.allocate();
     OrderIdMap::SlotHandle handle = orders_.findOrPrepareInsert(order.id);
     if (handle.is_duplicate) {
+        arena_.deallocate(node);
         return false;  // duplicate id
     }
+    orders_.commitInsert(handle, node);
 
-    OrderNode* node = arena_.allocate();
     order.seq = next_seq_++;
     node->order = order;
 
@@ -259,7 +265,6 @@ inline bool FastOrderBook::addOrder(Order order) {
     }
     lvl->insert(node);
 
-    orders_.commitInsert(handle, node);
     return true;
 }
 
