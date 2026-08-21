@@ -1,16 +1,4 @@
 // ADM/USDT — image-matched dark, candlestick + MA + volume, rAF batching
-window.onerror = function(msg, src, line, col, err) {
-  try {
-    const c = document.getElementById('toasts');
-    if (c) {
-      const d = document.createElement('div');
-      d.className = 'toast error';
-      d.textContent = msg + ' (' + src + ':' + line + ':' + col + ')';
-      c.appendChild(d);
-      setTimeout(() => d.remove(), 5000);
-    }
-  } catch(e) {}
-};
 (() => {
   const byId = id => document.getElementById(id);
   const book = { bids: new Map(), asks: new Map(), bestBid: null, bestAsk: null };
@@ -108,15 +96,15 @@ window.onerror = function(msg, src, line, col, err) {
     for(let [p,q] of asks){
       const row=document.createElement('div'); row.className='row sell'+(p===book.bestAsk?' best':''); row.dataset.price=p;
       const d=document.createElement('div'); d.className='depth'; d.style.width=`${(q/maxQty*100).toFixed(1)}%`; row.appendChild(d);
-      row.innerHTML+=`<span>${p}</span><span>${q}</span><span>${q}</span>`; row.insertBefore(d,row.firstChild); els.asks.appendChild(row);
+      row.innerHTML+=`<span>${p.toFixed(6)}</span><span>${q.toFixed(4)}</span><span>${q.toFixed(4)}</span>`; row.insertBefore(d,row.firstChild); els.asks.appendChild(row);
     }
     els.bids.innerHTML=''; const bids=[...book.bids.entries()].sort((a,b)=>b[0]-a[0]);
     for(let [p,q] of bids){
       const row=document.createElement('div'); row.className='row buy'+(p===book.bestBid?' best':''); row.dataset.price=p;
       const d=document.createElement('div'); d.className='depth'; d.style.width=`${(q/maxQty*100).toFixed(1)}%`; row.appendChild(d);
-      row.innerHTML+=`<span>${p}</span><span>${q}</span><span>${q}</span>`; row.insertBefore(d,row.firstChild); els.bids.appendChild(row);
+      row.innerHTML+=`<span>${p.toFixed(6)}</span><span>${q.toFixed(4)}</span><span>${q.toFixed(4)}</span>`; row.insertBefore(d,row.firstChild); els.bids.appendChild(row);
     }
-    els.trades.innerHTML=''; for(let t of trades.slice(0,80)){ const r=document.createElement('div'); r.className='row '+t.side; const tm=new Date(t.time).toLocaleTimeString().slice(0,8); r.innerHTML=`<span>${tm}</span><span>${t.price}</span><span>${t.qty}</span>`; els.trades.appendChild(r); }
+    els.trades.innerHTML=''; for(let t of trades.slice(0,80)){ const r=document.createElement('div'); r.className='row '+t.side; const tm=new Date(t.time).toLocaleTimeString().slice(0,8); r.innerHTML=`<span>${tm}</span><span>${t.price.toFixed(6)}</span><span>${t.qty}</span>`; els.trades.appendChild(r); }
     els.orders.innerHTML=''; for(let [id,o] of [...orders.entries()].sort((a,b)=>b[0]-a[0]).slice(0,80)){ const r=document.createElement('div'); r.className='row'; r.innerHTML=`<span>${o.time}</span><span>${o.id}</span><span class="side ${o.side}">${o.side}</span><span>${o.price}</span><span>${o.qty}</span><span class="status ${o.status}">${o.status}</span><span><button data-id="${o.id}">✕</button></span>`; els.orders.appendChild(r); }
     els.orders.querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>sendCancel(Number(b.dataset.id))));
     els.posSummary.textContent=`Inv ${inventory} — ${orders.size} open`;
@@ -196,10 +184,12 @@ window.onerror = function(msg, src, line, col, err) {
     if(slice.length>0){ ctx.fillText(new Date(slice[0].time).toLocaleTimeString().slice(0,5),44,14+chartH+gapH+volH+12); ctx.fillText(new Date(slice[slice.length-1].time).toLocaleTimeString().slice(0,5),w-60,14+chartH+gapH+volH+12); }
   }
 
-  function wsUrl(){ if(!location.host) return 'ws://127.0.0.1:9000/ws'; const p=location.protocol==='https:'?'wss:':'ws:'; return p+'//'+location.host+'/ws'; }
+  let ws=null;
+  function wsUrl(){ const p=location.protocol==='https:'?'wss:':'ws:'; return p+'//'+location.host+'/ws'; }
   function connect(){
+    const dot=byId('connDot'); if(dot) dot.className='conn-dot offline';
     const url=wsUrl(); ws=new WebSocket(url);
-    ws.onopen=()=>{ setConn('online'); reconnectDelay=500; ws.send(JSON.stringify({type:'subscribe',channel:'book'})); };
+    ws.onopen=()=>{ byId('connDot').className='conn-dot online'; byId('connText').textContent='online'; byId('wsStatus').textContent='WS: online'; ws.send(JSON.stringify({type:'subscribe',channel:'book'})); };
     ws.onmessage=e=>{
       let m; try{m=JSON.parse(e.data)}catch{return;}
       const t=m.type;
@@ -210,9 +200,10 @@ window.onerror = function(msg, src, line, col, err) {
       else if(t==='error') toast(m.reason||'error',true);
       else if(t==='pong') latencyMs=Date.now()-(m.id||0);
     };
-    ws.onclose=()=>{ setConn('offline'); setTimeout(connect, Math.min(5000, (reconnectDelay*=1.5))); };
-    ws.onerror=()=>{ setConn('offline'); try{ws.close();}catch{} };
+    ws.onclose=()=>{ byId('connDot').className='conn-dot offline'; byId('connText').textContent='offline'; byId('wsStatus').textContent='WS: offline'; setTimeout(connect, Math.min(5000, (reconnectDelay*=1.5))); };
+    ws.onerror=()=>{ try{ws.close();}catch{} };
   }
+  let reconnectDelay=500;
   function handleMessage(m){ /* same as above for length-prefix fallback, not needed for WS */ }
 
   // order entry
